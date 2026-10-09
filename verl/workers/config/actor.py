@@ -168,6 +168,7 @@ class ActorConfig(BaseConfig):
     ppo_epochs: int = 1
     shuffle: bool = False
     data_loader_seed: int = 1
+    model_init_seed: Optional[int] = None
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     optim: OptimizerConfig = field(default_factory=OptimizerConfig)
     use_fused_kernels: bool = False

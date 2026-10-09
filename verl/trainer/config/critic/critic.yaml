@@ -76,6 +76,9 @@ shuffle: ${oc.select:actor_rollout_ref.actor.shuffle,false}
 # The seed used to construct mini-batch
 data_loader_seed: 42
 
+# Optional CPU RNG seed for random value-head/LoRA initialization; null preserves legacy behavior.
+model_init_seed: null
+
 # PPO value function clipping range
 cliprange_value: 0.5
 

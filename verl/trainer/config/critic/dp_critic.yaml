@@ -49,6 +49,9 @@ model:
   # LoRA scaling factor
   lora_alpha: 16
 
+  # Optional path to a pretrained critic LoRA adapter
+  lora_adapter_path: null
+
   # LoRA target modules: "all-linear" or list of linear projection layers
   target_modules: all-linear
 

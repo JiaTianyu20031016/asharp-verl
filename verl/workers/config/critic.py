@@ -75,6 +75,7 @@ class CriticConfig(BaseConfig):
     ppo_infer_max_token_len_per_gpu: int = 32768
     ppo_epochs: int = 1
     data_loader_seed: int = 1
+    model_init_seed: Optional[int] = None
     shuffle: bool = True
     cliprange_value: float = 0.5
     loss_agg_mode: str = "token-mean"
@@ -257,6 +258,7 @@ class FSDPCriticModelCfg(BaseModelConfig):
         fsdp_config (FSDPEngineConfig): FSDP-specific configuration block.
         lora_rank (int): Set to positive value to enable LoRA (e.g., 32).
         lora_alpha (int): LoRA scaling factor.
+        lora_adapter_path (Optional[str]): Pretrained critic LoRA adapter to load.
         target_modules (Union[str, List[str]]): LoRA target modules: "all-linear" or list of layer names.
     """
 
@@ -267,6 +269,7 @@ class FSDPCriticModelCfg(BaseModelConfig):
     fsdp_config: FSDPEngineConfig = field(default_factory=FSDPEngineConfig)
     lora_rank: int = 0
     lora_alpha: int = 16
+    lora_adapter_path: Optional[str] = None
     target_modules: str | list[str] = "all-linear"
     # TiledMLP configuration for memory-efficient MLP computation
     tiled_mlp: dict = field(default_factory=lambda: {"enabled": False, "num_shards": 4})

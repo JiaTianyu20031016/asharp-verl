@@ -119,6 +119,10 @@ algorithm:
   _target_: verl.trainer.config.AlgoConfig
   gamma: 1.0
   lam: 1.0
+  # Policy GAE lambda. If null, falls back to algorithm.lam.
+  lam_policy: null
+  # Critic-return GAE lambda. If null, falls back to algorithm.lam.
+  lam_critic: null
   adv_estimator: gae
   norm_adv_by_std_in_grpo: True
   use_kl_in_reward: False

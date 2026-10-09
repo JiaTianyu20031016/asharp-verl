@@ -108,6 +108,21 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     return data, metrics
 
 
+def _save_lora_train_meta(local_path: str, model_config, task_type: str) -> None:
+    """Persist the information that cannot be inferred from LoRA tensors."""
+    rank = model_config.get("lora_rank", 0)
+    if not rank:
+        return
+    metadata = {
+        "r": int(rank),
+        "lora_alpha": int(model_config.get("lora_alpha", rank)),
+        "task_type": task_type,
+    }
+    os.makedirs(local_path, exist_ok=True)
+    with open(os.path.join(local_path, "lora_train_meta.json"), "w", encoding="utf-8") as file:
+        json.dump(metadata, file, ensure_ascii=False, indent=2)
+
+
 def compute_response_mask(data: DataProto):
     """Compute the attention mask for the response part of the sequence.
 
@@ -131,6 +146,8 @@ def compute_advantage(
     adv_estimator: AdvantageEstimator,
     gamma: float = 1.0,
     lam: float = 1.0,
+    lam_policy: Optional[float] = None,
+    lam_critic: Optional[float] = None,
     num_repeat: int = 1,
     norm_adv_by_std_in_grpo: bool = True,
     config: Optional[AlgoConfig] = None,
@@ -144,7 +161,9 @@ def compute_advantage(
         data (DataProto): The data containing batched model outputs and inputs.
         adv_estimator (AdvantageEstimator): The advantage estimator to use (e.g., GAE, GRPO, REINFORCE++).
         gamma (float, optional): Discount factor for future rewards. Defaults to 1.0.
-        lam (float, optional): Lambda parameter for GAE. Defaults to 1.0.
+        lam (float, optional): Backward-compatible GAE lambda used when a role-specific value is unset.
+        lam_policy (float, optional): GAE lambda for policy advantages.
+        lam_critic (float, optional): GAE lambda for critic returns.
         num_repeat (int, optional): Number of times to repeat the computation. Defaults to 1.
         norm_adv_by_std_in_grpo (bool, optional): Whether to normalize advantages by standard deviation in
             GRPO. Defaults to True.
@@ -158,14 +177,31 @@ def compute_advantage(
         data.batch["response_mask"] = compute_response_mask(data)
     # prepare response group
     if adv_estimator == AdvantageEstimator.GAE:
-        # Compute advantages and returns using Generalized Advantage Estimation (GAE)
-        advantages, returns = core_algos.compute_gae_advantage_return(
+        policy_lam = lam if lam_policy is None else lam_policy
+        critic_lam = lam if lam_critic is None else lam_critic
+        for name, value in (("lam_policy", policy_lam), ("lam_critic", critic_lam)):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {value}")
+
+        # VC-PPO/VAPO use an unbiased Monte-Carlo target for the critic
+        # while retaining a lower-variance lambda for policy advantages.
+        advantages, policy_returns = core_algos.compute_gae_advantage_return(
             token_level_rewards=data.batch["token_level_rewards"],
             values=data.batch["values"],
             response_mask=data.batch["response_mask"],
             gamma=gamma,
-            lam=lam,
+            lam=policy_lam,
         )
+        if critic_lam == policy_lam:
+            returns = policy_returns
+        else:
+            _, returns = core_algos.compute_gae_advantage_return(
+                token_level_rewards=data.batch["token_level_rewards"],
+                values=data.batch["values"],
+                response_mask=data.batch["response_mask"],
+                gamma=gamma,
+                lam=critic_lam,
+            )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
         if config.get("use_pf_ppo", False):
@@ -884,6 +920,7 @@ class RayPPOTrainer:
         self.actor_rollout_wg.save_checkpoint(
             actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep
         )
+        _save_lora_train_meta(actor_local_path, self.config.actor_rollout_ref.model, "CAUSAL_LM")
 
         if self.use_critic:
             critic_local_path = os.path.join(local_global_step_folder, str(Role.Critic))
@@ -897,6 +934,7 @@ class RayPPOTrainer:
             self.critic_wg.save_checkpoint(
                 critic_local_path, critic_remote_path, self.global_steps, max_ckpt_to_keep=max_critic_ckpt_to_keep
             )
+            _save_lora_train_meta(critic_local_path, self.config.critic.model, "TOKEN_CLS")
 
         # save dataloader
         local_mkdir_safe(local_global_step_folder)
@@ -1488,11 +1526,12 @@ class RayPPOTrainer:
                             adv_estimator=self.config.algorithm.adv_estimator,
                             gamma=self.config.algorithm.gamma,
                             lam=self.config.algorithm.lam,
+                            lam_policy=self.config.algorithm.get("lam_policy", None),
+                            lam_critic=self.config.algorithm.get("lam_critic", None),
                             num_repeat=self.config.actor_rollout_ref.rollout.n,
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
-
                     # update critic
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
@@ -1534,6 +1573,29 @@ class RayPPOTrainer:
 
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+                    else:
+                        # A critic-only run still needs periodic/final checkpoints.
+                        # Previously, checkpointing lived only in the actor-update
+                        # branch, so a full critic warm-up silently saved nothing.
+                        esi_close_to_expiration = should_save_ckpt_esi(
+                            max_steps_duration=self.max_steps_duration,
+                            redundant_time=self.config.trainer.esi_redundant_time,
+                        )
+                        if self.config.trainer.save_freq > 0 and (
+                            is_last_step
+                            or self.global_steps % self.config.trainer.save_freq == 0
+                            or esi_close_to_expiration
+                        ):
+                            if esi_close_to_expiration:
+                                print("Force saving checkpoint: ESI instance expiration approaching.")
+                            with marked_timer("save_checkpoint", timing_raw, color="green"):
+                                self._save_checkpoint()
+
+                        # Rollout replicas were put to sleep after generation. During
+                        # critic warmup the actor is unchanged, but replicas still need
+                        # to be synchronized and woken before the next rollout.
+                        with marked_timer("update_weights", timing_raw, color="red"):
+                            self.checkpoint_manager.update_weights(self.global_steps)
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

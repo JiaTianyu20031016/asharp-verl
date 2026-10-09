@@ -16,6 +16,7 @@ import argparse
 import os
 import warnings
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -52,7 +53,13 @@ def parse_args():
     base_op_parser.add_argument(
         "--is-value-model",
         action="store_true",
-        help="Whether the model is a value model (currently only Megatron supported)",
+        help="Whether to export the checkpoint as a token-classification value model",
+    )
+    base_op_parser.add_argument(
+        "--lora-alpha", type=int, default=None, help="LoRA alpha override for checkpoints without metadata"
+    )
+    base_op_parser.add_argument(
+        "--lora-task-type", type=str, default=None, help="PEFT task type override for checkpoints without metadata"
     )
     base_op_parser.add_argument(
         "--use_cpu_initialization",
@@ -97,8 +104,7 @@ class ModelMergerConfig:
         tie_word_embedding (bool): Whether to tie word embedding weights (currently only Megatron
             supported). Defaults to False.
         trust_remote_code (bool): Whether to trust remote code. Defaults to False.
-        is_value_model (bool): Whether the model is a value model (currently only Megatron
-            supported). Defaults to False.
+        is_value_model (bool): Whether the model is a token-classification value model. Defaults to False.
         local_dir (Optional[str]): Path to the saved model checkpoints. Defaults to None.
         hf_model_config_path (Optional[str]): Path to HuggingFace model configuration files. Defaults to None.
         hf_upload (bool): Whether to upload to HuggingFace (computed automatically). Not for initialization.
@@ -114,6 +120,8 @@ class ModelMergerConfig:
     tie_word_embedding: bool = False
     trust_remote_code: bool = False
     is_value_model: bool = False
+    lora_alpha: Optional[int] = None
+    lora_task_type: Optional[str] = None
     local_dir: Optional[str] = None
     hf_model_config_path: Optional[str] = None
     hf_upload: bool = field(init=False)
@@ -134,6 +142,8 @@ def generate_config_from_args(args: argparse.Namespace) -> ModelMergerConfig:
         "tie_word_embedding": args.tie_word_embedding,
         "trust_remote_code": args.trust_remote_code,
         "is_value_model": args.is_value_model,
+        "lora_alpha": args.lora_alpha,
+        "lora_task_type": args.lora_task_type,
         "local_dir": args.local_dir,
         "hf_model_config_path": os.path.join(args.local_dir, "huggingface"),
         "use_cpu_initialization": args.use_cpu_initialization,
@@ -192,6 +202,8 @@ class BaseModelMerger(ABC):
         )
 
     def get_transformers_auto_model_class(self):
+        if self.config.is_value_model:
+            return AutoModelForTokenClassification
         has_remote_code = hasattr(self.model_config, "auto_map") and any(
             self.model_config.architectures[0] in val for val in self.model_config.auto_map.values()
         )
@@ -238,23 +250,20 @@ class BaseModelMerger(ABC):
         return model
 
     def _load_lora_train_meta(self) -> Optional[dict[str, object]]:
-        if not self.config.local_dir:
-            return None
-
-        meta_path = os.path.join(self.config.local_dir, "lora_train_meta.json")
-        if not os.path.exists(meta_path):
-            return None
-
-        import json
-
-        try:
-            with open(meta_path, encoding="utf-8") as f:
-                lora_meta = json.load(f)
-        except Exception as e:
-            warnings.warn(f"Failed to read LoRA metadata from {meta_path}: {e}", stacklevel=2)
-            return None
-
         result = {}
+        lora_meta = {}
+        meta_path = None
+        if self.config.local_dir:
+            meta_path = os.path.join(self.config.local_dir, "lora_train_meta.json")
+            if os.path.exists(meta_path):
+                import json
+
+                try:
+                    with open(meta_path, encoding="utf-8") as f:
+                        lora_meta = json.load(f)
+                except Exception as e:
+                    warnings.warn(f"Failed to read LoRA metadata from {meta_path}: {e}", stacklevel=2)
+
         if "r" in lora_meta:
             try:
                 result["r"] = int(lora_meta["r"])
@@ -276,6 +285,13 @@ class BaseModelMerger(ABC):
             else:
                 warnings.warn(f"Invalid task_type in {meta_path}: {task_type}", stacklevel=2)
 
+        cli_alpha = getattr(self.config, "lora_alpha", None)
+        if cli_alpha is not None:
+            result["lora_alpha"] = int(cli_alpha)
+        cli_task_type = getattr(self.config, "lora_task_type", None)
+        if cli_task_type is not None:
+            result["task_type"] = str(cli_task_type)
+
         return result if len(result) > 0 else None
 
     def save_lora_adapter(self, state_dict: dict[str, torch.Tensor]):
@@ -294,19 +310,25 @@ class BaseModelMerger(ABC):
             return None
 
         import json
-        from typing import OrderedDict
-
         import peft
         from safetensors.torch import save_file
 
         lora_params = OrderedDict()
         target_modules = set()
+        modules_to_save = set()
         lora_key = None
 
         for name in lora_params_names:
             lora_key = name.replace(".default.weight", ".weight")
             target_modules.add(lora_key.split(".")[-3])
             lora_params[lora_key] = state_dict.pop(name)
+
+        modules_to_save_names = [name for name in state_dict if ".modules_to_save.default." in name]
+        for name in modules_to_save_names:
+            adapter_key = name.replace(".modules_to_save.default.", ".")
+            module_name = name.split(".modules_to_save.default.", 1)[0].split(".")[-1]
+            modules_to_save.add(module_name)
+            lora_params[adapter_key] = state_dict.pop(name)
 
         inferred_lora_rank = min(lora_params[lora_key].shape[0], lora_params[lora_key].shape[1])
         lora_meta = self._load_lora_train_meta()
@@ -346,11 +368,17 @@ class BaseModelMerger(ABC):
             "lora_alpha": lora_alpha,
             "target_modules": list(target_modules),
         }
+        if modules_to_save:
+            peft_dict["modules_to_save"] = sorted(modules_to_save)
+            if task_type is None and modules_to_save.intersection({"classifier", "score"}):
+                task_type = "TOKEN_CLS"
         if task_type is not None:
             peft_dict["task_type"] = task_type
         peft_config = peft.LoraConfig(**peft_dict).to_dict()
-        peft_config["task_type"] = peft_config["task_type"].value if peft_config["task_type"] else None
-        peft_config["peft_type"] = peft_config["peft_type"].value if peft_config["peft_type"] else None
+        for enum_key in ("task_type", "peft_type"):
+            enum_value = peft_config.get(enum_key)
+            if hasattr(enum_value, "value"):
+                peft_config[enum_key] = enum_value.value
         peft_config["target_modules"] = list(peft_config["target_modules"])
 
         lora_path = os.path.join(self.config.target_dir, "lora_adapter")
@@ -364,6 +392,8 @@ class BaseModelMerger(ABC):
                 name.replace("base_model.model.", "")
                 .replace(".base_layer.weight", ".weight")
                 .replace(".base_layer.bias", ".bias")
+                .replace(".original_module.weight", ".weight")
+                .replace(".original_module.bias", ".bias")
             )
             state_dict[key] = state_dict.pop(name)
 
@@ -376,6 +406,8 @@ class BaseModelMerger(ABC):
                 self.model_config, torch_dtype=torch.bfloat16, trust_remote_code=self.config.trust_remote_code
             )
         model.to_empty(device="cpu")
+        if self.config.is_value_model:
+            self.model_config.architectures = [type(model).__name__]
         model = self.patch_model_generation_config(model)
 
         lora_path = self.save_lora_adapter(state_dict)

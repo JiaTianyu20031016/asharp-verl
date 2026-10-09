@@ -16,7 +16,7 @@ from types import SimpleNamespace  # Or use a mock object library
 
 import pytest
 
-from verl.utils.model import update_model_config
+from verl.utils.model import align_valuehead_model_architecture, update_model_config
 
 
 # Parametrize with different override scenarios
@@ -50,3 +50,13 @@ def test_update_model_config(override_kwargs):
         assert mock_config.nested_params.sub_param_x == "original_x", "Nested sub_param_x should be unchanged"
         assert mock_config.nested_params.sub_param_y == 100, "Nested sub_param_y should be unchanged"
         assert not hasattr(mock_config.nested_params, "sub_param_z"), "Nested sub_param_z should not exist"
+
+
+def test_align_valuehead_model_architecture_for_token_classifier():
+    token_classifier = type("Qwen2ForTokenClassification", (), {})()
+    config = SimpleNamespace(architectures=["Qwen2ForCausalLM"])
+
+    result = align_valuehead_model_architecture(token_classifier, config)
+
+    assert result is config
+    assert config.architectures == ["Qwen2ForTokenClassification"]

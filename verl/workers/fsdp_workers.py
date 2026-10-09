@@ -437,6 +437,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         init_context = get_init_weight_context_manager(
             use_meta_tensor=not actor_model_config.tie_word_embeddings, mesh=self.device_mesh
         )
+        model_init_seed = self.config.actor.get("model_init_seed") if role == "actor" else None
+        cpu_rng_state = torch.get_rng_state() if model_init_seed is not None else None
+        if model_init_seed is not None:
+            torch.default_generator.manual_seed(int(model_init_seed))
+            if self.rank == 0:
+                logger.info("Seeding actor CPU model/LoRA initialization with %s", model_init_seed)
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -532,6 +538,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     "bias": "none",
                 }
                 actor_module = get_peft_model(actor_module, LoraConfig(**lora_config))
+
+        if cpu_rng_state is not None:
+            torch.set_rng_state(cpu_rng_state)
 
         self.use_orig_params = fsdp_config.get("use_orig_params", False)
         if self.config.actor.get("freeze_vision_tower", False):
@@ -1365,7 +1374,7 @@ class CriticWorker(Worker, DistProfilerExtension):
         # the following line is necessary
         from torch.distributed.fsdp import MixedPrecision
 
-        from verl.utils.model import load_valuehead_model, print_model_size
+        from verl.utils.model import align_valuehead_model_architecture, load_valuehead_model, print_model_size
         from verl.utils.torch_dtypes import PrecisionType
 
         use_shm = config.model.get("use_shm", False)
@@ -1428,6 +1437,13 @@ class CriticWorker(Worker, DistProfilerExtension):
         if use_tiled_mlp and config.strategy == "fsdp":
             raise ValueError("TiledMLP requires FSDP2. Set `critic.strategy=fsdp2`.")
 
+        model_init_seed = config.get("model_init_seed")
+        cpu_rng_state = torch.get_rng_state() if model_init_seed is not None else None
+        if model_init_seed is not None:
+            torch.default_generator.manual_seed(int(model_init_seed))
+            if self.rank == 0:
+                logger.info("Seeding critic CPU value-head/LoRA initialization with %s", model_init_seed)
+
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
             critic_model_config.classifier_dropout = 0.0
@@ -1440,6 +1456,7 @@ class CriticWorker(Worker, DistProfilerExtension):
                 critic_model_config,
                 config.model.get("trust_remote_code", False),
             )
+            align_valuehead_model_architecture(critic_module, critic_model_config)
 
             use_remove_padding = config.model.get("use_remove_padding", False)
 
@@ -1489,6 +1506,9 @@ class CriticWorker(Worker, DistProfilerExtension):
                     "bias": "none",
                 }
                 critic_module = get_peft_model(critic_module, LoraConfig(**lora_config))
+
+        if cpu_rng_state is not None:
+            torch.set_rng_state(cpu_rng_state)
 
         if self.rank == 0:
             print_model_size(critic_module)

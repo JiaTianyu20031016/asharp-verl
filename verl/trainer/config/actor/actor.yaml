@@ -116,6 +116,9 @@ shuffle: false
 # The seed used to construct mini-batch
 data_loader_seed: 42
 
+# Optional CPU RNG seed for random model/LoRA initialization; null preserves legacy behavior.
+model_init_seed: null
+
 # checkpoint configs
 checkpoint:
 

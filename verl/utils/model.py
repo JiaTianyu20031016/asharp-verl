@@ -668,6 +668,20 @@ def load_valuehead_model(local_path, torch_dtype, model_config, trust_remote_cod
     return model
 
 
+def align_valuehead_model_architecture(model, model_config):
+    """Keep saved HF metadata aligned with a token-classification value model.
+
+    ``AutoConfig.from_pretrained`` retains the base causal-LM architecture even
+    when ``AutoModelForTokenClassification`` constructs the critic.  FSDP
+    checkpoints persist that config, so downstream merger tools would otherwise
+    instantiate the wrong model class and lose the scalar value head.
+    """
+    architecture = type(model).__name__
+    if "ForTokenClassification" in architecture:
+        model_config.architectures = [architecture]
+    return model_config
+
+
 _architecture_to_auto_class = {
     "ForCausalLM": AutoModelForCausalLM,
     "ForVision2Seq": AutoModelForVision2Seq,

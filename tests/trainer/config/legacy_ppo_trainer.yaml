@@ -696,6 +696,9 @@ critic:
     # LoRA scaling factor
     lora_alpha: 16
 
+    # Optional path to a pretrained critic LoRA adapter
+    lora_adapter_path: null
+
     # LoRA target modules: "all-linear" or list of linear projection layers
     target_modules: all-linear
 
@@ -902,6 +905,12 @@ algorithm:
 
   # Trade-off between bias and variance in the GAE estimator
   lam: 1.0
+
+  # Policy GAE lambda. If null, falls back to algorithm.lam.
+  lam_policy: null
+
+  # Critic-return GAE lambda. If null, falls back to algorithm.lam.
+  lam_critic: null
 
   # Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", etc.
   adv_estimator: gae
