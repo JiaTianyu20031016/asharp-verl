@@ -65,6 +65,7 @@ from verl.utils.fsdp_utils import (
     collect_lora_params,
     fsdp2_load_full_state_dict,
     fsdp_version,
+    get_fsdp_full_state_dict,
     get_fsdp_wrap_policy,
     get_init_weight_context_manager,
     get_shard_placement_fn,
@@ -1288,6 +1289,46 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 pass
 
 
+def _save_critic_lora_adapter(critic_module, local_path: str) -> None:
+    """Export the live FP32 critic adapter using the merger's PEFT format."""
+    from verl.utils.lora_adapter import save_lora_adapter
+
+    peft_model = getattr(critic_module, "_fsdp_wrapped_module", critic_module)
+    peft_config = peft_model.peft_config["default"]
+    task_type = peft_config.task_type
+    if hasattr(task_type, "value"):
+        task_type = task_type.value
+    metadata = {
+        "r": int(peft_config.r),
+        "lora_alpha": int(peft_config.lora_alpha),
+        "task_type": task_type,
+    }
+
+    # Every rank participates in the FSDP gather; only rank zero writes files.
+    state_dict = get_fsdp_full_state_dict(critic_module, offload_to_cpu=True, rank0_only=True)
+    error = None
+    if dist.get_rank() == 0:
+        try:
+            if (
+                save_lora_adapter(
+                    state_dict,
+                    local_path,
+                    metadata,
+                    required_dtype=torch.float32,
+                    require_modules_to_save=True,
+                )
+                is None
+            ):
+                raise ValueError("Critic is configured for LoRA but its state dict contains no LoRA weights")
+        except Exception as exc:
+            error = f"Failed to save FP32 critic LoRA adapter: {exc}"
+    del state_dict
+    errors = [error]
+    dist.broadcast_object_list(errors, src=0)
+    if errors[0] is not None:
+        raise RuntimeError(errors[0])
+
+
 class CriticWorker(Worker, DistProfilerExtension):
     def __init__(self, config: FSDPCriticConfig):
         Worker.__init__(self)
@@ -1727,6 +1768,8 @@ class CriticWorker(Worker, DistProfilerExtension):
         )
 
         torch.distributed.barrier()
+        if self._is_lora:
+            _save_critic_lora_adapter(self.critic_module, local_path)
         if self._is_offload_param:
             offload_fsdp_model_to_cpu(self.critic_module)
 
