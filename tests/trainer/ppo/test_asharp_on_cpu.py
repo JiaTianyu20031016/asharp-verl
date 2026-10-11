@@ -206,7 +206,8 @@ def test_engine_critic_uses_moment_loss(monkeypatch, mode):
     assert metrics["critic/vf_clipfrac"] == 0
 
 
-def test_composed_hydra_config_supports_asharp():
+@pytest.mark.parametrize("refresh", [False, True])
+def test_composed_hydra_config_supports_asharp(refresh):
     from pathlib import Path
 
     from hydra import compose, initialize_config_dir
@@ -223,12 +224,14 @@ def test_composed_hydra_config_supports_asharp():
                 "critic.value_type=log_moment",
                 "algorithm.asharp_beta=0.4",
                 "algorithm.asharp_lam=0.9",
-            ],
+            ]
+            + (["algorithm.asharp_refresh_after_critic_update=True"] if refresh else []),
         )
     validate_asharp_config(cfg)
     algo = omega_conf_to_dataclass(cfg.algorithm, AlgoConfig)
     assert algo.asharp_beta == 0.4
     assert algo.asharp_lam == 0.9
+    assert algo.asharp_refresh_after_critic_update is refresh
     assert cfg.critic.log_moment_loss == "mse"
 
 

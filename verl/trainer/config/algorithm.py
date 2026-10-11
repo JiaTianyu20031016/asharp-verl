@@ -609,6 +609,8 @@ class AlgoConfig(BaseConfig):
     # Fixed lookahead temperature and critic lambda for A-sharp.
     asharp_beta: float = 1.0
     asharp_lam: float = 1.0
+    # Opt into a second critic inference after fitting this rollout batch.
+    asharp_refresh_after_critic_update: bool = False
     norm_adv_by_std_in_grpo: bool = True
     use_kl_in_reward: bool = False
     kl_penalty: str = "kl"

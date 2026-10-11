@@ -587,6 +587,7 @@ algorithm:
   adv_estimator: gae
   asharp_beta: 1.0
   asharp_lam: 1.0
+  asharp_refresh_after_critic_update: false
   norm_adv_by_std_in_grpo: true
   use_kl_in_reward: false
   kl_penalty: kl

@@ -84,6 +84,9 @@ algorithm:
   # Entropic lambda-return mixing for critic targets.
   asharp_lam: 1.0
 
+  # Optional second critic inference to refresh actor advantages after critic fitting.
+  asharp_refresh_after_critic_update: false
+
   # Whether to normalize advantages by std (specific to GRPO)
   norm_adv_by_std_in_grpo: True
 

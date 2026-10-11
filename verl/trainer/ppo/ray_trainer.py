@@ -1565,10 +1565,11 @@ class RayPPOTrainer:
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
 
-                    # A-sharp: consume the newly fitted conditional moment, keeping
-                    # the pre-update lambda targets frozen for critic supervision.
+                    # Optional A-sharp refresh. By default the actor uses the
+                    # advantages frozen alongside the pre-update critic targets.
                     if (
                         self.config.algorithm.adv_estimator == AdvantageEstimator.ASHARP
+                        and self.config.algorithm.get("asharp_refresh_after_critic_update", False)
                         and self.config.trainer.critic_warmup <= self.global_steps
                     ):
                         with marked_timer("asharp_refresh", timing_raw, color="cyan"):

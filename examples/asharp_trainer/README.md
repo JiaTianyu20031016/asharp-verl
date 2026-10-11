@@ -18,10 +18,15 @@ A_t = r_t + (u_fitted(s_next)-u_fitted(s_t))/beta
 
 Terminal continuation has `u = z = 0` (exponential moment 1). Lambda endpoints
 are handled explicitly. Targets and advantages are detached and advantages are
-not whitened. Training order is rollout -> critic inference -> frozen targets ->
-critic update -> critic inference -> actor update. The second inference lets this
-round's actor consume the newly fitted critic; fitting and evaluation on the same
-rollouts can introduce overfitting and is not an unbiasedness guarantee.
+not whitened. By default, training order is rollout -> critic inference -> freeze
+both targets and A-sharp advantages -> critic update -> actor update. The actor
+uses the pre-update critic predictions, requiring only one critic inference pass.
+
+Set `algorithm.asharp_refresh_after_critic_update=True` to opt into a second
+critic inference after the critic update and recompute actor advantages from the
+newly fitted critic. Critic targets remain frozen. This adds inference overhead;
+fitting and evaluation on the same rollouts can also introduce overfitting and
+is not an unbiasedness guarantee. The default is `False`.
 
 ## Losses
 
