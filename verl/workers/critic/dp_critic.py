@@ -228,14 +228,21 @@ class DataParallelPPOCritic(BasePPOCritic):
                     returns = model_inputs["returns"]
 
                     vpreds = self._forward_micro_batch(model_inputs)
-                    vf_loss, vf_clipfrac = core_algos.compute_value_loss(
-                        vpreds=vpreds,
-                        values=values,
-                        returns=returns,
-                        response_mask=response_mask,
-                        cliprange_value=self.config.cliprange_value,
-                        loss_agg_mode=self.config.loss_agg_mode,
-                    )
+                    if self.config.value_type == "log_moment":
+                        from verl.trainer.ppo.asharp import compute_log_moment_loss
+
+                        vf_loss, vf_clipfrac = compute_log_moment_loss(
+                            vpreds, returns, response_mask, self.config.log_moment_loss, self.config.loss_agg_mode
+                        )
+                    else:
+                        vf_loss, vf_clipfrac = core_algos.compute_value_loss(
+                            vpreds=vpreds,
+                            values=values,
+                            returns=returns,
+                            response_mask=response_mask,
+                            cliprange_value=self.config.cliprange_value,
+                            loss_agg_mode=self.config.loss_agg_mode,
+                        )
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz
                         loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size

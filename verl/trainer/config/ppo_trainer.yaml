@@ -78,6 +78,12 @@ algorithm:
   # Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", etc.
   adv_estimator: gae
 
+  # Fixed inverse temperature for the exponential-return critic.
+  asharp_beta: 1.0
+
+  # Entropic lambda-return mixing for critic targets.
+  asharp_lam: 1.0
+
   # Whether to normalize advantages by std (specific to GRPO)
   norm_adv_by_std_in_grpo: True
 

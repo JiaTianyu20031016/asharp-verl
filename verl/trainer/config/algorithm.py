@@ -606,6 +606,9 @@ class AlgoConfig(BaseConfig):
     lam_policy: Optional[float] = None
     lam_critic: Optional[float] = None
     adv_estimator: str = "gae"
+    # Fixed lookahead temperature and critic lambda for A-sharp.
+    asharp_beta: float = 1.0
+    asharp_lam: float = 1.0
     norm_adv_by_std_in_grpo: bool = True
     use_kl_in_reward: bool = False
     kl_penalty: str = "kl"

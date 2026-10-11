@@ -85,9 +85,14 @@ def need_reward_model(
 
 def need_critic(config: DictConfig) -> bool:
     """Given a config, do we need critic."""
+    is_asharp = config.algorithm.adv_estimator == AdvantageEstimator.ASHARP
+    if is_asharp or config.critic.get("value_type", "value") == "log_moment":
+        from verl.trainer.ppo.asharp import validate_asharp_config
+
+        validate_asharp_config(config)
     if config.critic.enable is not None:
         return bool(config.critic.enable)
-    elif config.algorithm.adv_estimator == AdvantageEstimator.GAE:
+    elif config.algorithm.adv_estimator in (AdvantageEstimator.GAE, AdvantageEstimator.ASHARP):
         return True
     else:
         warnings.warn(

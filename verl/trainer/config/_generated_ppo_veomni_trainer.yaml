@@ -80,6 +80,7 @@ actor_rollout_ref:
     ppo_epochs: 1
     shuffle: false
     data_loader_seed: 42
+    model_init_seed: null
     checkpoint:
       _target_: verl.trainer.config.CheckpointConfig
       save_contents:
@@ -425,6 +426,8 @@ critic:
   rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
   strategy: veomni
   enable: null
+  value_type: value
+  log_moment_loss: mse
   model:
     path: ~/models/deepseek-llm-7b-chat
     tokenizer_path: ${oc.select:actor_rollout_ref.model.path,"~/models/deepseek-llm-7b-chat"}
@@ -441,6 +444,7 @@ critic:
   ppo_epochs: ${oc.select:actor_rollout_ref.actor.ppo_epochs,1}
   shuffle: ${oc.select:actor_rollout_ref.actor.shuffle,false}
   data_loader_seed: ${oc.select:actor_rollout_ref.actor.data_loader_seed,null}
+  model_init_seed: null
   cliprange_value: 0.5
   loss_agg_mode: ${oc.select:actor_rollout_ref.actor.loss_agg_mode,token-mean}
   checkpoint:
@@ -581,6 +585,8 @@ algorithm:
   lam_policy: null
   lam_critic: null
   adv_estimator: gae
+  asharp_beta: 1.0
+  asharp_lam: 1.0
   norm_adv_by_std_in_grpo: true
   use_kl_in_reward: false
   kl_penalty: kl
