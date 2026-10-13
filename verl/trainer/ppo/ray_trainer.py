@@ -1137,16 +1137,15 @@ class RayPPOTrainer:
 
     def _refresh_asharp_advantages(self, batch: DataProto) -> None:
         """Use the fitted critic for the actor without recomputing its training labels."""
-        from verl.trainer.ppo.asharp import compute_asharp
+        from verl.trainer.ppo.asharp import compute_asharp_from_config
 
         refreshed = self._compute_values(batch)
         batch.batch["values"] = refreshed.batch["values"]
-        batch.batch["advantages"], _ = compute_asharp(
+        batch.batch["advantages"], _ = compute_asharp_from_config(
             batch.batch["token_level_rewards"],
             batch.batch["values"],
             batch.batch["response_mask"],
-            self.config.algorithm.asharp_beta,
-            self.config.algorithm.asharp_lam,
+            self.config.algorithm,
         )
 
     def _compute_values(self, batch: DataProto) -> DataProto:

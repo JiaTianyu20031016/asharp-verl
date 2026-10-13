@@ -608,7 +608,11 @@ class AlgoConfig(BaseConfig):
     adv_estimator: str = "gae"
     # Fixed lookahead temperature and critic lambda for A-sharp.
     asharp_beta: float = 1.0
-    asharp_lam: float = 1.0
+    asharp_lam: Optional[float] = None  # deprecated alias
+    asharp_lam_critic: Optional[float] = None  # effective default 0.95; None permits unambiguous alias migration
+    asharp_lam_actor: float = 0.0
+    asharp_actor_estimator: str = "one_step"
+    asharp_normalize_advantages: bool = False
     # Opt into a second critic inference after fitting this rollout batch.
     asharp_refresh_after_critic_update: bool = False
     norm_adv_by_std_in_grpo: bool = True

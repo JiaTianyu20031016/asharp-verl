@@ -451,6 +451,8 @@ critic:
   enable: null
   value_type: value
   log_moment_loss: mse
+  asharp_beta: ${oc.select:algorithm.asharp_beta,1.0}
+  log_moment_value_clip: false
   model:
     path: ~/models/deepseek-llm-7b-chat
     tokenizer_path: ${oc.select:actor_rollout_ref.model.path,"~/models/deepseek-llm-7b-chat"}
@@ -609,7 +611,11 @@ algorithm:
   lam_critic: null
   adv_estimator: gae
   asharp_beta: 1.0
-  asharp_lam: 1.0
+  asharp_lam: null
+  asharp_lam_critic: null
+  asharp_lam_actor: 0.0
+  asharp_actor_estimator: one_step
+  asharp_normalize_advantages: false
   asharp_refresh_after_critic_update: false
   norm_adv_by_std_in_grpo: true
   use_kl_in_reward: false

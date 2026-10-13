@@ -194,11 +194,18 @@ def value_loss(config: CriticConfig, model_output, data: TensorDict, dp_group=No
     returns = data["returns"]
     response_mask = data["response_mask"].to(bool)
 
-    if config.value_type == "log_moment":
+    if config.value_type in ("entropic_value", "log_moment"):
         from verl.trainer.ppo.asharp import compute_log_moment_loss
 
         vf_loss, vf_clipfrac = compute_log_moment_loss(
-            vpreds, returns, response_mask, config.log_moment_loss, config.loss_agg_mode
+            vpreds,
+            returns,
+            response_mask,
+            config.log_moment_loss,
+            config.loss_agg_mode,
+            beta=config.asharp_beta,
+            values=values,
+            cliprange_value=config.cliprange_value if config.log_moment_value_clip else None,
         )
     else:
         vf_loss, vf_clipfrac = compute_value_loss(

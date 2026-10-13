@@ -12,11 +12,17 @@ strategy: ???
 # set it to True manually if you always want to enable critic worker
 enable: null
 
-# Critic output semantics: value or log_moment (A-sharp only).
+# Critic output semantics: value or entropic_value (A-sharp H parameterization).
 value_type: value
 
 # Exponential-moment regression: mse (default) or positive.
 log_moment_loss: mse
+
+# Same fixed beta as the advantage estimator, also needed by worker losses.
+asharp_beta: ${oc.select:algorithm.asharp_beta,1.0}
+
+# Apply PPO value clipping in H units; false retains plain moment regression.
+log_moment_value_clip: false
 
 # optimizer configs
 optim:

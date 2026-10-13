@@ -215,9 +215,9 @@ def get_kl_controller(kl_ctrl):
 
 @register_adv_est(AdvantageEstimator.ASHARP)
 def compute_asharp_advantage_return(token_level_rewards, values, response_mask, config, **kwargs):
-    from verl.trainer.ppo.asharp import compute_asharp
+    from verl.trainer.ppo.asharp import compute_asharp_from_config
 
-    return compute_asharp(token_level_rewards, values, response_mask, config.asharp_beta, config.asharp_lam)
+    return compute_asharp_from_config(token_level_rewards, values, response_mask, config)
 
 
 @register_adv_est(AdvantageEstimator.GAE)  # or simply: @register_adv_est("gae")

@@ -81,8 +81,20 @@ algorithm:
   # Fixed inverse temperature for the exponential-return critic.
   asharp_beta: 1.0
 
-  # Entropic lambda-return mixing for critic targets.
-  asharp_lam: 1.0
+  # Deprecated alias for asharp_lam_critic; conflicts are rejected.
+  asharp_lam: null
+
+  # Entropic critic lambda. Null resolves to 0.95 (or the deprecated alias).
+  asharp_lam_critic: null
+
+  # Actor trace decay, independent of the critic lambda.
+  asharp_lam_actor: 0.0
+
+  # one_step, log_plugin, residual_gae, or residual_exp.
+  asharp_actor_estimator: one_step
+
+  # Match ordinary PPO masked whitening when true; raw estimators otherwise.
+  asharp_normalize_advantages: false
 
   # Optional second critic inference to refresh actor advantages after critic fitting.
   asharp_refresh_after_critic_update: false

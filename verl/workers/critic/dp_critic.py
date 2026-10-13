@@ -228,11 +228,18 @@ class DataParallelPPOCritic(BasePPOCritic):
                     returns = model_inputs["returns"]
 
                     vpreds = self._forward_micro_batch(model_inputs)
-                    if self.config.value_type == "log_moment":
+                    if self.config.value_type in ("entropic_value", "log_moment"):
                         from verl.trainer.ppo.asharp import compute_log_moment_loss
 
                         vf_loss, vf_clipfrac = compute_log_moment_loss(
-                            vpreds, returns, response_mask, self.config.log_moment_loss, self.config.loss_agg_mode
+                            vpreds,
+                            returns,
+                            response_mask,
+                            self.config.log_moment_loss,
+                            self.config.loss_agg_mode,
+                            beta=self.config.asharp_beta,
+                            values=values,
+                            cliprange_value=self.config.cliprange_value if self.config.log_moment_value_clip else None,
                         )
                     else:
                         vf_loss, vf_clipfrac = core_algos.compute_value_loss(
