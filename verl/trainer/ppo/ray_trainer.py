@@ -177,11 +177,7 @@ def compute_advantage(
         data.batch["response_mask"] = compute_response_mask(data)
     # prepare response group
     if adv_estimator == AdvantageEstimator.GAE:
-        policy_lam = lam if lam_policy is None else lam_policy
-        critic_lam = lam if lam_critic is None else lam_critic
-        for name, value in (("lam_policy", policy_lam), ("lam_critic", critic_lam)):
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be in [0, 1], got {value}")
+        policy_lam, critic_lam = core_algos.resolve_lambdas(lam, lam_policy, lam_critic)
 
         # VC-PPO/VAPO use an unbiased Monte-Carlo target for the critic
         # while retaining a lower-variance lambda for policy advantages.
@@ -231,6 +227,8 @@ def compute_advantage(
             "response_mask": data.batch["response_mask"],
             "config": config,
         }
+        if adv_estimator == AdvantageEstimator.ASHARP:
+            adv_kwargs["values"] = data.batch["values"]
         if "uid" in data.non_tensor_batch:  # optional
             adv_kwargs["index"] = data.non_tensor_batch["uid"]
         if "reward_baselines" in data.batch:  # optional
@@ -935,6 +933,10 @@ class RayPPOTrainer:
                 critic_local_path, critic_remote_path, self.global_steps, max_ckpt_to_keep=max_critic_ckpt_to_keep
             )
             _save_lora_train_meta(critic_local_path, self.config.critic.model, "TOKEN_CLS")
+            if self.config.algorithm.adv_estimator == AdvantageEstimator.ASHARP:
+                from verl.trainer.ppo.asharp import save_asharp_checkpoint
+
+                save_asharp_checkpoint(critic_local_path, self.config.algorithm.asharp_beta)
 
         # save dataloader
         local_mkdir_safe(local_global_step_folder)
@@ -996,6 +998,12 @@ class RayPPOTrainer:
 
         actor_path = os.path.join(global_step_folder, "actor")
         critic_path = os.path.join(global_step_folder, str(Role.Critic))
+        if self.config.algorithm.adv_estimator == AdvantageEstimator.ASHARP:
+            from verl.trainer.ppo.asharp import check_asharp_checkpoint
+
+            check_asharp_checkpoint(critic_path, self.config.algorithm.asharp_beta)
+        elif os.path.exists(os.path.join(critic_path, "asharp_meta.json")):
+            raise ValueError("Cannot resume a log-moment critic as an ordinary value critic")
         # load actor
         self.actor_rollout_wg.load_checkpoint(
             actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load
@@ -1122,6 +1130,19 @@ class RayPPOTrainer:
             seqlen_list=global_seqlen_lst.tolist(), partitions=global_partition_lst, prefix=logging_prefix
         )
         metrics.update(global_balance_stats)
+
+    def _refresh_asharp_advantages(self, batch: DataProto) -> None:
+        """Use the fitted critic for the actor without recomputing its training labels."""
+        from verl.trainer.ppo.asharp import compute_asharp_from_config
+
+        refreshed = self._compute_values(batch)
+        batch.batch["values"] = refreshed.batch["values"]
+        batch.batch["advantages"], _ = compute_asharp_from_config(
+            batch.batch["token_level_rewards"],
+            batch.batch["values"],
+            batch.batch["response_mask"],
+            self.config.algorithm,
+        )
 
     def _compute_values(self, batch: DataProto) -> DataProto:
         if self.use_legacy_worker_impl == "disable":
@@ -1542,6 +1563,16 @@ class RayPPOTrainer:
                             critic_output = self._update_critic(batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
+
+                    # Optional A-sharp refresh. By default the actor uses the
+                    # advantages frozen alongside the pre-update critic targets.
+                    if (
+                        self.config.algorithm.adv_estimator == AdvantageEstimator.ASHARP
+                        and self.config.algorithm.get("asharp_refresh_after_critic_update", False)
+                        and self.config.trainer.critic_warmup <= self.global_steps
+                    ):
+                        with marked_timer("asharp_refresh", timing_raw, color="cyan"):
+                            self._refresh_asharp_advantages(batch)
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:

@@ -78,6 +78,18 @@ algorithm:
   # Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", etc.
   adv_estimator: gae
 
+  # Fixed inverse temperature for the exponential-return critic.
+  asharp_beta: 1.0
+
+  # log_plugin, residual_gae, or residual_exp; lam_policy=0 gives one-step A-sharp.
+  asharp_actor_estimator: residual_exp
+
+  # Match ordinary PPO masked whitening when true; raw estimators otherwise.
+  asharp_normalize_advantages: false
+
+  # Optional second critic inference to refresh actor advantages after critic fitting.
+  asharp_refresh_after_critic_update: false
+
   # Whether to normalize advantages by std (specific to GRPO)
   norm_adv_by_std_in_grpo: True
 

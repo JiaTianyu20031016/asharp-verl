@@ -65,6 +65,10 @@ class CriticConfig(BaseConfig):
     strategy: str = MISSING
     ppo_micro_batch_size_per_gpu: Optional[int] = None
     enable: Optional[bool] = None
+    value_type: str = "value"
+    log_moment_loss: str = "mse"
+    asharp_beta: float = 1.0
+    log_moment_value_clip: bool = False
     rollout_n: int = 1
     ppo_mini_batch_size: int = 1
     use_dynamic_bsz: bool = False

@@ -95,6 +95,7 @@ class AdvantageEstimator(str, Enum):
     """
 
     GAE = "gae"
+    ASHARP = "asharp"
     GRPO = "grpo"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
     REINFORCE_PLUS_PLUS_BASELINE = "reinforce_plus_plus_baseline"
@@ -210,6 +211,23 @@ def get_kl_controller(kl_ctrl):
         return AdaptiveKLController(init_kl_coef=kl_ctrl.kl_coef, target_kl=kl_ctrl.target_kl, horizon=kl_ctrl.horizon)
     else:
         raise NotImplementedError
+
+
+def resolve_lambdas(lam=1.0, lam_policy=None, lam_critic=None):
+    """Resolve actor/critic trace decays, sharing PPO's fallback to lam."""
+    policy_lam = lam if lam_policy is None else lam_policy
+    critic_lam = lam if lam_critic is None else lam_critic
+    for name, value in (("lam_policy", policy_lam), ("lam_critic", critic_lam)):
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be in [0, 1], got {value}")
+    return policy_lam, critic_lam
+
+
+@register_adv_est(AdvantageEstimator.ASHARP)
+def compute_asharp_advantage_return(token_level_rewards, values, response_mask, config, **kwargs):
+    from verl.trainer.ppo.asharp import compute_asharp_from_config
+
+    return compute_asharp_from_config(token_level_rewards, values, response_mask, config)
 
 
 @register_adv_est(AdvantageEstimator.GAE)  # or simply: @register_adv_est("gae")
