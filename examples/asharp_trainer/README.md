@@ -53,12 +53,11 @@ All methods use the unchanged PPO clipped actor objective. With
 
 | Estimator | Actor signal | Exact-critic property |
 | --- | --- | --- |
-| `one_step` (default) | a_t, ignores actor lambda | Plug-in A-sharp |
 | `log_plugin` | Actor entropic lambda-return minus H_t | Generally Jensen-biased |
 | `residual_gae` | a_t plus future D residuals weighted by lambda_a^k | Conditionally unbiased |
-| `residual_exp` | Same, additionally weighted by intervening products of q | Conditionally unbiased |
+| `residual_exp` (default) | Same, additionally weighted by intervening products of q | Conditionally unbiased |
 
-All three multi-step estimators reduce to one_step when lambda_a=0 and to raw
+All three estimators reduce to the one-step signal a_t when lambda_a=0 and to raw
 ordinary GAE(lambda_a) when beta=0. Approximate critics do not guarantee
 unbiasedness. Exponential propagation may increase variance; no estimator is
 assumed uniformly superior. Actor and critic lambdas are independent.
@@ -73,9 +72,9 @@ algorithm:
   gamma: 1.0
   use_kl_in_reward: false
   asharp_beta: 1.0
-  asharp_lam_actor: 0.0
-  asharp_lam_critic: 0.95
-  asharp_actor_estimator: one_step
+  asharp_actor_estimator: residual_exp
+  lam_policy: 0.95
+  lam_critic: 1.0
   asharp_normalize_advantages: false
   asharp_refresh_after_critic_update: false
 critic:
@@ -85,12 +84,23 @@ critic:
 ```
 
 `critic.asharp_beta` is automatically interpolated from the algorithm beta; do
-not override it independently. Ordinary `lam`, `lam_policy` and `lam_critic`
-settings do not control A-sharp. The effective default critic lambda is 0.95.
-In the base config its field is null so a deprecated `asharp_lam` override can be
-recognized unambiguously. The old alias is accepted with a warning; conflicting
-old/new values are rejected. The deprecated `value_type=log_moment` config name
-is also accepted, but **always denotes the new H parameterization**.
+not override it independently. A-sharp and ordinary PPO share `lam_policy` for
+actor traces and `lam_critic` for critic targets. Each falls back independently
+to `algorithm.lam` when null; the existing default `lam` is 1.0. There is no
+A-sharp-specific lambda default. Set `lam_policy=0` for one-step A-sharp with any
+of the three estimators.
+
+Migration from earlier versions of this branch:
+
+- Replace `asharp_lam_actor` with `lam_policy`.
+- Replace `asharp_lam_critic` or `asharp_lam` with `lam_critic`.
+- Replace `asharp_actor_estimator=one_step` with any supported estimator (for
+  example `residual_exp`) and `lam_policy=0`.
+
+The removed keys are no longer in the configuration schema. Manually inserted
+obsolete keys are rejected with migration instructions rather than silently
+ignored. The deprecated `value_type=log_moment` config name is still accepted,
+but always denotes the H parameterization.
 
 Default training order remains rollout -> one critic inference -> freeze actor
 advantages and critic targets -> update critic -> update actor.
@@ -108,8 +118,8 @@ comparison use:
 algorithm:
   asharp_beta: 0.0
   asharp_actor_estimator: residual_gae  # log_plugin/residual_exp are identical here
-  asharp_lam_actor: 0.95              # match PPO lam_policy
-  asharp_lam_critic: 0.95             # match PPO lam_critic
+  lam_policy: 0.95
+  lam_critic: 0.95
   asharp_normalize_advantages: true
 critic:
   log_moment_value_clip: true

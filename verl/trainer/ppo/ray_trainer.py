@@ -177,11 +177,7 @@ def compute_advantage(
         data.batch["response_mask"] = compute_response_mask(data)
     # prepare response group
     if adv_estimator == AdvantageEstimator.GAE:
-        policy_lam = lam if lam_policy is None else lam_policy
-        critic_lam = lam if lam_critic is None else lam_critic
-        for name, value in (("lam_policy", policy_lam), ("lam_critic", critic_lam)):
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be in [0, 1], got {value}")
+        policy_lam, critic_lam = core_algos.resolve_lambdas(lam, lam_policy, lam_critic)
 
         # VC-PPO/VAPO use an unbiased Monte-Carlo target for the critic
         # while retaining a lower-variance lambda for policy advantages.

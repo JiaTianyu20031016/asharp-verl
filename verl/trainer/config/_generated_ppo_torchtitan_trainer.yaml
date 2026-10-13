@@ -611,10 +611,7 @@ algorithm:
   lam_critic: null
   adv_estimator: gae
   asharp_beta: 1.0
-  asharp_lam: null
-  asharp_lam_critic: null
-  asharp_lam_actor: 0.0
-  asharp_actor_estimator: one_step
+  asharp_actor_estimator: residual_exp
   asharp_normalize_advantages: false
   asharp_refresh_after_critic_update: false
   norm_adv_by_std_in_grpo: true

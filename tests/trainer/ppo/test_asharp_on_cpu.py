@@ -118,7 +118,7 @@ def config():
             "algorithm": {
                 "adv_estimator": "asharp",
                 "asharp_beta": 0.7,
-                "asharp_lam_critic": 0.4,
+                "lam_critic": 0.4,
                 "gamma": 1.0,
                 "use_kl_in_reward": False,
             },
@@ -155,7 +155,7 @@ def test_registry_dispatch_and_post_update_refresh_preserve_targets():
     [
         ("algorithm.asharp_beta", -0.1),
         ("algorithm.asharp_beta", float("nan")),
-        ("algorithm.asharp_lam_critic", 1.1),
+        ("algorithm.lam_critic", 1.1),
         ("algorithm.gamma", 0.99),
         ("algorithm.use_kl_in_reward", True),
         ("critic.enable", False),
@@ -242,14 +242,14 @@ def test_composed_hydra_config_supports_asharp(refresh):
                 "algorithm.adv_estimator=asharp",
                 "critic.value_type=entropic_value",
                 "algorithm.asharp_beta=0.4",
-                "algorithm.asharp_lam_critic=0.9",
+                "algorithm.lam_critic=0.9",
             ]
             + (["algorithm.asharp_refresh_after_critic_update=True"] if refresh else []),
         )
     validate_asharp_config(cfg)
     algo = omega_conf_to_dataclass(cfg.algorithm, AlgoConfig)
     assert algo.asharp_beta == 0.4
-    assert algo.asharp_lam_critic == 0.9
+    assert algo.lam_critic == 0.9
     assert cfg.critic.asharp_beta == 0.4
     assert algo.asharp_refresh_after_critic_update is refresh
     assert cfg.critic.log_moment_loss == "mse"
@@ -419,14 +419,26 @@ def test_critic_lambda_independent_of_actor_estimator_and_lambda():
             torch.testing.assert_close(target, actual, rtol=0, atol=0)
 
 
-def test_lambda_alias_migration_and_conflict():
-    from verl.trainer.ppo.asharp import resolve_critic_lambda
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("asharp_lam", "lam_critic"),
+        ("asharp_lam_critic", "lam_critic"),
+        ("asharp_lam_actor", "lam_policy"),
+    ],
+)
+def test_removed_lambda_settings_have_migration_error(old, new):
+    from verl.trainer.ppo.asharp import resolve_asharp_lambdas
 
-    assert resolve_critic_lambda({}) == 0.95
-    with pytest.warns(FutureWarning, match="deprecated"):
-        assert resolve_critic_lambda({"asharp_lam": 0.4}) == 0.4
-    with pytest.raises(ValueError, match="Conflicting"):
-        resolve_critic_lambda({"asharp_lam": 0.4, "asharp_lam_critic": 0.6})
+    with pytest.raises(ValueError, match=new):
+        resolve_asharp_lambdas({old: 0.4})
+
+
+def test_one_step_mode_is_replaced_by_zero_policy_lambda():
+    from verl.trainer.ppo.asharp import resolve_asharp_lambdas
+
+    with pytest.raises(ValueError, match="lam_policy=0"):
+        resolve_asharp_lambdas({"asharp_actor_estimator": "one_step"})
 
 
 def test_old_log_head_checkpoint_cannot_silently_resume(tmp_path):
@@ -470,7 +482,7 @@ def test_exact_tree_jensen_bias_and_conditional_unbiasedness(beta, lam):
     result = compare(beta, lam, 0.0)["estimators"]
     for row in result["log_plugin"]["root_conditional"]:
         assert row["bias"] < -1e-6  # strict Jensen inequality on both stochastic continuations
-    for estimator in ("one_step", "residual_gae", "residual_exp"):
+    for estimator in ("lambda_zero", "residual_gae", "residual_exp"):
         for row in result[estimator]["root_conditional"]:
             assert abs(row["bias"]) < 1e-12
         assert result[estimator]["actor_gradient_l2_error"] < 1e-12
@@ -481,7 +493,7 @@ def test_controlled_critic_error_bias_variance_mse_and_actor_gradient(noise):
     from examples.asharp_trainer.compare_estimators import compare
 
     result = compare(1.0, 0.8, noise)["estimators"]
-    for estimator in ("one_step", *ESTIMATORS):
+    for estimator in ("lambda_zero", *ESTIMATORS):
         metrics = result[estimator]
         assert math.isfinite(metrics["actor_gradient_l2_error"])
         assert metrics["actor_gradient_l2_error"] > 1e-6
@@ -555,3 +567,45 @@ def test_positive_loss_large_negative_exponent_stays_finite():
     assert loss.item() == pytest.approx(1e20)
     loss.backward()
     assert h.grad.item() == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "settings,expected",
+    [
+        ({}, (1.0, 1.0)),
+        ({"lam": 0.6}, (0.6, 0.6)),
+        ({"lam": 0.6, "lam_policy": None, "lam_critic": None}, (0.6, 0.6)),
+        ({"lam": 0.6, "lam_policy": 0.95}, (0.95, 0.6)),
+        ({"lam": 0.6, "lam_critic": 1.0}, (0.6, 1.0)),
+        ({"lam": 0.6, "lam_policy": 0.0, "lam_critic": 1.0}, (0.0, 1.0)),
+    ],
+)
+@pytest.mark.parametrize("estimator", ESTIMATORS)
+def test_shared_lambda_config_matches_ppo_end_to_end(settings, expected, estimator):
+    from verl.trainer.ppo.asharp import resolve_asharp_lambdas
+
+    algo = OmegaConf.create(
+        {"asharp_beta": 0.0, "asharp_actor_estimator": estimator, "asharp_normalize_advantages": True, **settings}
+    )
+    assert resolve_asharp_lambdas(algo) == expected
+
+    def batch():
+        return DataProto.from_single_dict(
+            {
+                "token_level_rewards": torch.tensor([[0.2, -0.7, 1.3], [-0.5, 0.8, 0.0]]),
+                "values": torch.tensor([[0.4, -0.3, 0.9], [0.7, 0.1, 0.0]]),
+                "response_mask": torch.tensor([[1.0, 1.0, 1.0], [1.0, 1.0, 0.0]]),
+            }
+        )
+
+    kwargs = {
+        "lam": settings.get("lam", 1.0),
+        "lam_policy": settings.get("lam_policy"),
+        "lam_critic": settings.get("lam_critic"),
+        "config": algo,
+    }
+    asharp = compute_advantage(batch(), "asharp", **kwargs)
+    ppo = compute_advantage(batch(), "gae", **kwargs)
+    mask = asharp.batch["response_mask"]
+    torch.testing.assert_close(asharp.batch["advantages"], ppo.batch["advantages"] * mask)
+    torch.testing.assert_close(asharp.batch["returns"], ppo.batch["returns"] * mask, atol=0, rtol=0)

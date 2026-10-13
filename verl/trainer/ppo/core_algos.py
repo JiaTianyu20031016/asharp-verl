@@ -213,6 +213,16 @@ def get_kl_controller(kl_ctrl):
         raise NotImplementedError
 
 
+def resolve_lambdas(lam=1.0, lam_policy=None, lam_critic=None):
+    """Resolve actor/critic trace decays, sharing PPO's fallback to lam."""
+    policy_lam = lam if lam_policy is None else lam_policy
+    critic_lam = lam if lam_critic is None else lam_critic
+    for name, value in (("lam_policy", policy_lam), ("lam_critic", critic_lam)):
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be in [0, 1], got {value}")
+    return policy_lam, critic_lam
+
+
 @register_adv_est(AdvantageEstimator.ASHARP)
 def compute_asharp_advantage_return(token_level_rewards, values, response_mask, config, **kwargs):
     from verl.trainer.ppo.asharp import compute_asharp_from_config

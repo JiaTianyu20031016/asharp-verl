@@ -94,14 +94,15 @@ def compare(beta=1.0, lam_actor=0.8, noise_scale=0.0):
     probabilities, scores = tree["probabilities"], tree["scores"]
     exact_gradient = (probabilities[:, None, None] * exact[:, :, None] * scores).sum((0, 1))
     results = {}
-    for estimator in ACTOR_ESTIMATORS:
+    settings = [("lambda_zero", "residual_exp", 0.0)] + [(e, e, lam_actor) for e in ACTOR_ESTIMATORS]
+    for label, estimator, actor_lam in settings:
         adv, _ = compute_asharp(
             tree["rewards"],
             tree["values"],
             tree["mask"],
             beta,
             lam_critic=0.95,
-            lam_actor=lam_actor,
+            lam_actor=actor_lam,
             actor_estimator=estimator,
         )
         root_metrics = []
@@ -120,7 +121,7 @@ def compare(beta=1.0, lam_actor=0.8, noise_scale=0.0):
                 }
             )
         gradient = (probabilities[:, None, None] * adv[:, :, None] * scores).sum((0, 1))
-        results[estimator] = {
+        results[label] = {
             "root_conditional": root_metrics,
             "actor_gradient_l2_error": torch.linalg.vector_norm(gradient - exact_gradient).item(),
         }

@@ -573,8 +573,8 @@ class AlgoConfig(BaseConfig):
     Args:
         gamma (float): Discount factor for future rewards.
         lam (float): Backward-compatible default for both policy and critic GAE lambda.
-        lam_policy (Optional[float]): Policy GAE lambda. Falls back to ``lam`` when unset.
-        lam_critic (Optional[float]): Critic-return GAE lambda. Falls back to ``lam`` when unset.
+        lam_policy (Optional[float]): Policy advantage trace lambda (GAE or A-sharp). Falls back to ``lam`` when unset.
+        lam_critic (Optional[float]): Critic-return trace lambda (GAE or A-sharp). Falls back to ``lam`` when unset.
         adv_estimator (str): Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", etc.
         norm_adv_by_std_in_grpo (bool): Whether to normalize advantages by std (specific to GRPO).
         use_kl_in_reward (bool): Whether to enable in-reward KL penalty.
@@ -606,12 +606,9 @@ class AlgoConfig(BaseConfig):
     lam_policy: Optional[float] = None
     lam_critic: Optional[float] = None
     adv_estimator: str = "gae"
-    # Fixed lookahead temperature and critic lambda for A-sharp.
+    # Fixed lookahead temperature; trace decays use lam_policy/lam_critic above.
     asharp_beta: float = 1.0
-    asharp_lam: Optional[float] = None  # deprecated alias
-    asharp_lam_critic: Optional[float] = None  # effective default 0.95; None permits unambiguous alias migration
-    asharp_lam_actor: float = 0.0
-    asharp_actor_estimator: str = "one_step"
+    asharp_actor_estimator: str = "residual_exp"
     asharp_normalize_advantages: bool = False
     # Opt into a second critic inference after fitting this rollout batch.
     asharp_refresh_after_critic_update: bool = False

@@ -23,7 +23,7 @@ import warnings
 
 import torch
 
-ACTOR_ESTIMATORS = ("one_step", "log_plugin", "residual_gae", "residual_exp")
+ACTOR_ESTIMATORS = ("log_plugin", "residual_gae", "residual_exp")
 VALUE_TYPES = ("entropic_value", "log_moment")  # latter is a deprecated config alias
 
 
@@ -111,9 +111,9 @@ def compute_asharp(
     values,
     response_mask,
     beta,
-    lam_critic=0.95,
+    lam_critic=1.0,
     lam_actor=0.0,
-    actor_estimator="one_step",
+    actor_estimator="residual_exp",
     normalize_advantages=False,
 ):
     """Compute actor A-sharp estimates and entropic critic targets in H units.
@@ -121,7 +121,7 @@ def compute_asharp(
     Actor and critic lambdas are independent. The single reverse scan maintains
     the critic entropic residual, and the selected actor residual/return. At
     beta=0 all three multi-step estimators are ordinary undiscounted GAE.
-    one_step always uses actor lambda=0, regardless of lam_actor.
+    All estimators give the one-step signal when lam_actor=0.
     """
     _check_lambda(lam_critic)
     _check_lambda(lam_actor)
@@ -133,7 +133,7 @@ def compute_asharp(
     next_value = torch.zeros_like(values[:, 0])
     critic_tail = torch.zeros_like(next_value)
     actor_tail = torch.zeros_like(next_value)
-    effective_lam = 0.0 if actor_estimator == "one_step" else lam_actor
+    effective_lam = lam_actor
     for t in reversed(range(values.shape[1])):
         a = rewards[:, t] + next_value - values[:, t]
         critic_tail = (a + _entropic_mix(critic_tail, beta, lam_critic)).masked_fill(~valid[:, t], 0)
@@ -238,27 +238,33 @@ def compute_log_moment_loss(
     return agg_loss(losses, response_mask, loss_agg_mode), clipfrac
 
 
-def resolve_critic_lambda(config):
-    """Accept the old lambda key, but reject ambiguous conflicting settings."""
-    old, new = config.get("asharp_lam"), config.get("asharp_lam_critic")
-    if old is not None:
-        if new is not None and old != new:
-            raise ValueError("Conflicting asharp_lam and asharp_lam_critic; remove the deprecated asharp_lam")
-        warnings.warn("asharp_lam is deprecated; use asharp_lam_critic", FutureWarning, stacklevel=2)
-        return old
-    return 0.95 if new is None else new
+def resolve_asharp_lambdas(config):
+    """Use the shared PPO lambda settings; reject obsolete ambiguous aliases."""
+    from verl.trainer.ppo.core_algos import resolve_lambdas
+
+    for old, new in (
+        ("asharp_lam", "lam_critic"),
+        ("asharp_lam_critic", "lam_critic"),
+        ("asharp_lam_actor", "lam_policy"),
+    ):
+        if config.get(old) is not None:
+            raise ValueError(f"{old} was removed; use algorithm.{new}")
+    if config.get("asharp_actor_estimator") == "one_step":
+        raise ValueError("one_step was removed; use residual_exp (or another estimator) with lam_policy=0")
+    return resolve_lambdas(config.get("lam", 1.0), config.get("lam_policy"), config.get("lam_critic"))
 
 
 def compute_asharp_from_config(rewards, values, response_mask, config):
     """Shared driver entry for initial estimation and optional post-update refresh."""
+    policy_lam, critic_lam = resolve_asharp_lambdas(config)
     return compute_asharp(
         rewards,
         values,
         response_mask,
         config.asharp_beta,
-        resolve_critic_lambda(config),
-        config.get("asharp_lam_actor", 0.0),
-        config.get("asharp_actor_estimator", "one_step"),
+        critic_lam,
+        policy_lam,
+        config.get("asharp_actor_estimator", "residual_exp"),
         config.get("asharp_normalize_advantages", False),
     )
 
@@ -283,9 +289,8 @@ def validate_asharp_config(config):
     _check_beta(algo.asharp_beta)
     if critic.get("asharp_beta", algo.asharp_beta) != algo.asharp_beta:
         raise ValueError("critic.asharp_beta must equal algorithm.asharp_beta")
-    _check_lambda(resolve_critic_lambda(algo))
-    _check_lambda(algo.get("asharp_lam_actor", 0.0))
-    if algo.get("asharp_actor_estimator", "one_step") not in ACTOR_ESTIMATORS:
+    resolve_asharp_lambdas(algo)
+    if algo.get("asharp_actor_estimator", "residual_exp") not in ACTOR_ESTIMATORS:
         raise ValueError("Unknown asharp_actor_estimator")
     if algo.gamma != 1:
         raise ValueError("A-sharp currently implements undiscounted returns (gamma=1)")
