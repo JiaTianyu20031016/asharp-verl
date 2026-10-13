@@ -465,7 +465,9 @@ class DataParallelPPOActor(BasePPOActor):
 
         if use_dynamic_bsz:
             max_token_len = data.meta_info["max_token_len"] * self.ulysses_sequence_parallel_size
-            micro_batches, batch_idx_list = prepare_dynamic_batch(data, max_token_len=max_token_len)
+            micro_batches, batch_idx_list = prepare_dynamic_batch(
+                data, max_token_len=max_token_len, dp_group=torch.distributed.group.WORLD
+            )
         else:
             micro_batches = data.split(micro_batch_size)
 
@@ -553,11 +555,19 @@ class DataParallelPPOActor(BasePPOActor):
             "actor/pg_loss": 0.0,
             "actor/kl_loss": 0.0,
         }
+        # pg_loss and kl_loss below are first reduced within each micro-batch,
+        # then weighted by loss_scale_factor so their gradients add up to the
+        # mini-batch objective.  Keep track of the same weights for reporting:
+        # without the final normalization, the logged values grow linearly with
+        # the number of mini-batches and PPO epochs in one update_policy call.
+        accumulated_loss_weight = 0.0
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
                 if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
-                    micro_batches, _ = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
+                    micro_batches, _ = prepare_dynamic_batch(
+                        mini_batch, max_token_len=max_token_len, dp_group=torch.distributed.group.WORLD
+                    )
                 else:
                     self.gradient_accumulation = (
                         self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
@@ -583,6 +593,7 @@ class DataParallelPPOActor(BasePPOActor):
                         loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
                     else:
                         loss_scale_factor = 1 / self.gradient_accumulation
+                    accumulated_loss_weight += loss_scale_factor
 
                     # all return: (bsz, response_length)
                     outputs = self._forward_micro_batch(
@@ -672,5 +683,9 @@ class DataParallelPPOActor(BasePPOActor):
                 grad_norm = self._optimizer_step()
                 mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, mini_batch_metrics)
+        if accumulated_loss_weight <= 0:
+            raise RuntimeError("update_policy processed no micro-batches")
+        metrics["actor/pg_loss"] /= accumulated_loss_weight
+        metrics["actor/kl_loss"] /= accumulated_loss_weight
         self.actor_optimizer.zero_grad()
         return metrics

@@ -130,3 +130,6 @@ logs
 log
 outputs
 .history
+
+# Local experiment configurations, reports, and generated artifacts
+/experiments/

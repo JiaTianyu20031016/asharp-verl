@@ -1289,7 +1289,11 @@ class RayPPOTrainer:
         self._load_checkpoint()
         self.checkpoint_manager.update_weights(self.global_steps)
 
-        current_epoch = self.global_steps // len(self.train_dataloader)
+        # A checkpoint saved exactly at an epoch boundary contains a consumed
+        # dataloader iterator. Re-enter that epoch once so the restored iterator
+        # can finish before the next fresh iterator is created. Otherwise resume
+        # silently runs one epoch fewer than requested.
+        current_epoch = max(self.global_steps - 1, 0) // len(self.train_dataloader)
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
