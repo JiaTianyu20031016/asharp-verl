@@ -1,4 +1,4 @@
-"""Monte Carlo A-sharp estimates for selected response-prefix states.
+"""Monte Carlo value estimates for selected response-prefix states.
 
 The selector is intentionally left open: different projects can define what a
 reasoning step or other useful continuation point means for their data.
@@ -57,6 +57,17 @@ def mc_entropic_value(returns: torch.Tensor, beta: float) -> torch.Tensor:
     return maximum + (torch.logsumexp(beta * (returns - maximum), dim=0) - math.log(returns.numel())) / beta
 
 
+def estimate_vine_value(returns: torch.Tensor, estimator: str, beta: float) -> torch.Tensor:
+    """Estimate a prefix value with ordinary MC or the A-sharp log moment."""
+    if returns.ndim != 1 or returns.numel() == 0 or not torch.isfinite(returns).all():
+        raise ValueError("Vine requires a nonempty vector of finite Monte Carlo returns")
+    if estimator == "mc":
+        return returns.mean()
+    if estimator == "asharp":
+        return mc_entropic_value(returns, beta)
+    raise ValueError(f"Unsupported Vine value estimator: {estimator}")
+
+
 def require_terminal_rewards(rewards: torch.Tensor, response_mask: torch.Tensor) -> None:
     """Ensure full-response Monte Carlo scores have no earlier reward to double-count."""
     if rewards.shape != response_mask.shape:
@@ -75,13 +86,16 @@ def compute_vine_advantages(
     response_mask: torch.Tensor,
     points: list[list[int]],
     state_values: list[list[torch.Tensor]],
+    estimator: str = "asharp",
 ) -> torch.Tensor:
-    """Apply A-sharp's one-step residual to each selected reasoning segment.
+    """Assign one advantage to each reasoning segment.
 
-    Each segment receives its observed rewards plus the estimated entropic
-    value at its end, minus the estimate at its start. Terminal value is zero.
-    The result is broadcast to valid tokens in that segment for actor training.
+    Original VinePPO uses the observed return from the segment's start minus
+    its MC value. A-sharp keeps the local segment reward plus next entropic
+    value minus current entropic value. Values are broadcast over the segment.
     """
+    if estimator not in ("mc", "asharp"):
+        raise ValueError(f"Unsupported Vine advantage estimator: {estimator}")
     if rewards.shape != response_mask.shape or len(points) != rewards.shape[0] or len(state_values) != len(points):
         raise ValueError("Vine reward, mask, point, and value shapes must agree")
     result = torch.zeros_like(rewards)
@@ -93,9 +107,12 @@ def compute_vine_advantages(
             raise ValueError("Vine points must start at zero and be unique, sorted, and nonterminal")
         for idx, start in enumerate(selected):
             end = selected[idx + 1] if idx + 1 < len(selected) else length
-            next_value = estimates[idx + 1] if idx + 1 < len(selected) else 0
-            segment_reward = rewards[row, start:end].sum()
-            result[row, start:end] = segment_reward + next_value - estimates[idx]
+            if estimator == "mc":
+                result[row, start:end] = rewards[row, start:length].sum() - estimates[idx]
+            else:
+                next_value = estimates[idx + 1] if idx + 1 < len(selected) else 0
+                segment_reward = rewards[row, start:end].sum()
+                result[row, start:end] = segment_reward + next_value - estimates[idx]
     if not torch.isfinite(result).all():
         raise ValueError("Vine produced non-finite advantages")
     return result

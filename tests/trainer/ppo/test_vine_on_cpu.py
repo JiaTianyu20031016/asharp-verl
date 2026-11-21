@@ -1,4 +1,4 @@
-"""Checks for A-sharp Vine's Monte Carlo plumbing without rollout workers."""
+"""Checks for Vine's Monte Carlo plumbing without rollout workers."""
 
 import asyncio
 import math
@@ -12,13 +12,14 @@ from omegaconf import OmegaConf
 
 from verl import DataProto
 from verl.experimental.agent_loop.vine_continuation_agent_loop import VineContinuationAgentLoop
-from verl.trainer.ppo.asharp_vine import (
+from verl.trainer.ppo.utils import need_critic
+from verl.trainer.ppo.vine_algos import (
     compute_vine_advantages,
+    estimate_vine_value,
     mc_entropic_value,
     require_terminal_rewards,
     validate_mc_points,
 )
-from verl.trainer.ppo.utils import need_critic
 from verl.trainer.ppo.vine_trainer import RayVinePPOTrainer, validate_vine_config
 from verl.workers.rollout.replica import TokenOutput
 
@@ -30,8 +31,12 @@ def test_mc_entropic_value_and_segment_residuals():
     torch.testing.assert_close(mc_entropic_value(scores, 2), expected)
     rewards = torch.tensor([[0.0, 0.0, 1.0]])
     mask = torch.ones_like(rewards)
-    advantages = compute_vine_advantages(rewards, mask, [[0, 2]], [[torch.tensor(0.2), torch.tensor(0.8)]])
-    torch.testing.assert_close(advantages, torch.tensor([[0.6, 0.6, 0.2]]))
+    values = [[torch.tensor(0.2), torch.tensor(0.8)]]
+    asharp_advantages = compute_vine_advantages(rewards, mask, [[0, 2]], values, estimator="asharp")
+    torch.testing.assert_close(asharp_advantages, torch.tensor([[0.6, 0.6, 0.2]]))
+    mc_advantages = compute_vine_advantages(rewards, mask, [[0, 2]], values, estimator="mc")
+    torch.testing.assert_close(mc_advantages, torch.tensor([[0.8, 0.8, 0.2]]))
+    torch.testing.assert_close(estimate_vine_value(scores, "mc", beta=float("nan")), scores.mean())
 
 
 def test_point_contract_and_validation():
@@ -49,7 +54,8 @@ def test_vine_config_requires_critic_free_unshaped_rewards():
     cfg = OmegaConf.create(
         {
             "algorithm": {
-                "adv_estimator": "asharp_vine",
+                "adv_estimator": "vine",
+                "vine_advantage_estimator": "mc",
                 "asharp_beta": 2.0,
                 "vine_mc_samples": 2,
                 "vine_max_points": 3,
@@ -71,7 +77,7 @@ def test_full_config_selects_critic_free_vine():
     with initialize_config_dir(config_dir=config_dir, version_base=None):
         config = compose(
             config_name="ppo_trainer",
-            overrides=["algorithm.adv_estimator=asharp_vine", "critic.enable=False"],
+            overrides=["algorithm.adv_estimator=vine", "critic.enable=False"],
         )
     assert need_critic(config) is False
 
@@ -90,7 +96,12 @@ def test_auxiliary_sampling_and_reordered_advantages(monkeypatch):
     trainer = object.__new__(RayVinePPOTrainer)
     trainer.config = OmegaConf.create(
         {
-            "algorithm": {"vine_mc_samples": 2, "vine_max_points": 2, "asharp_beta": 0.0},
+            "algorithm": {
+                "vine_advantage_estimator": "asharp",
+                "vine_mc_samples": 2,
+                "vine_max_points": 2,
+                "asharp_beta": 0.0,
+            },
             "actor_rollout_ref": {"rollout": {"n": 1}},
         }
     )
@@ -117,6 +128,11 @@ def test_auxiliary_sampling_and_reordered_advantages(monkeypatch):
     )
     actual = trainer._compute_auxiliary_advantages(batch, auxiliary)
     torch.testing.assert_close(actual, torch.tensor([[0.5, 0.5, 0.5], [0.5, 0.0, 0.0]]))
+
+    trainer.config.algorithm.vine_advantage_estimator = "mc"
+    batch.non_tensor_batch["vine_origin_id"] = np.array([1, 0])
+    mc_actual = trainer._compute_auxiliary_advantages(batch, auxiliary)
+    torch.testing.assert_close(mc_actual, torch.tensor([[1.0, 1.0, 0.5], [0.5, 0.0, 0.0]]))
 
 
 def test_continuation_agent_samples_from_exact_prefix():

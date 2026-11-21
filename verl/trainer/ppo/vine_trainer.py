@@ -1,27 +1,29 @@
-"""A-sharp Vine training: auxiliary continuations before the PPO actor update."""
+"""Vine training: auxiliary continuations before the PPO actor update."""
 
 import math
 
 import numpy as np
 import torch
 
-from verl.trainer.ppo.asharp_vine import (
+from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+from verl.trainer.ppo.reward import extract_reward
+from verl.trainer.ppo.vine_algos import (
     compute_vine_advantages,
-    mc_entropic_value,
+    estimate_vine_value,
     require_terminal_rewards,
     select_mc_points,
     validate_mc_points,
 )
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
-from verl.trainer.ppo.reward import extract_reward
 
 
 def validate_vine_config(config) -> None:
     """Reject modes whose rewards or trajectories cannot be interpreted here."""
     algo = config.algorithm
-    if algo.adv_estimator != "asharp_vine":
-        raise ValueError("Vine requires algorithm.adv_estimator=asharp_vine")
-    if not math.isfinite(algo.asharp_beta) or algo.asharp_beta < 0:
+    if algo.adv_estimator != "vine":
+        raise ValueError("Vine requires algorithm.adv_estimator=vine")
+    if algo.vine_advantage_estimator not in ("mc", "asharp"):
+        raise ValueError("Vine advantage estimator must be mc or asharp")
+    if algo.vine_advantage_estimator == "asharp" and (not math.isfinite(algo.asharp_beta) or algo.asharp_beta < 0):
         raise ValueError("Vine requires a finite, nonnegative asharp_beta")
     if not isinstance(algo.vine_mc_samples, int) or algo.vine_mc_samples < 1:
         raise ValueError("Vine requires vine_mc_samples >= 1")
@@ -99,6 +101,7 @@ class RayVinePPOTrainer(RayPPOTrainer):
             raise ValueError("Vine Monte Carlo rewards must be finite")
 
         k = self.config.algorithm.vine_mc_samples
+        estimator = self.config.algorithm.vine_advantage_estimator
         beta = self.config.algorithm.asharp_beta
         estimates = {row: [] for row in range(len(original_points))}
         cursor = 0
@@ -106,7 +109,7 @@ class RayVinePPOTrainer(RayPPOTrainer):
             for point in points:
                 if origin_ids[cursor : cursor + k] != [row] * k or point_ids[cursor : cursor + k] != [point] * k:
                     raise ValueError("Vine auxiliary rollout order changed")
-                estimates[row].append(mc_entropic_value(returns[cursor : cursor + k], beta))
+                estimates[row].append(estimate_vine_value(returns[cursor : cursor + k], estimator, beta))
                 cursor += k
         if cursor != len(returns):
             raise ValueError("Vine auxiliary rollout count changed")
@@ -119,6 +122,8 @@ class RayVinePPOTrainer(RayPPOTrainer):
         ordered_estimates = [
             [value.to(device=rewards.device, dtype=rewards.dtype) for value in row] for row in ordered_estimates
         ]
-        advantages = compute_vine_advantages(rewards, batch.batch["response_mask"], ordered_points, ordered_estimates)
+        advantages = compute_vine_advantages(
+            rewards, batch.batch["response_mask"], ordered_points, ordered_estimates, estimator=estimator
+        )
         batch.non_tensor_batch.pop("vine_origin_id")
         return advantages

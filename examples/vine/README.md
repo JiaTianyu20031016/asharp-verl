@@ -1,9 +1,9 @@
-# A-sharp Vine training scaffold
+# Vine training scaffold
 
 This branch extends the standard Ray PPO actor update with Monte Carlo
 continuations from selected states in each generated response. The selector is
 deliberately an interface for now: implement
-`select_mc_points` in `verl/trainer/ppo/asharp_vine.py` before launching a run.
+`select_mc_points` in `verl/trainer/ppo/vine_algos.py` before launching a run.
 Until then, training raises `NotImplementedError` at the first batch.
 
 ## Configuration
@@ -12,14 +12,17 @@ Use a single-turn, text-only PPO run with a terminal task reward that scores
 the full response. Add these overrides:
 
 ```text
-algorithm.adv_estimator=asharp_vine
-algorithm.asharp_beta=2.0
+algorithm.adv_estimator=vine
+algorithm.vine_advantage_estimator=mc
 algorithm.vine_mc_samples=4
 algorithm.vine_max_points=8
 algorithm.gamma=1.0
 algorithm.use_kl_in_reward=False
 critic.enable=False
 ```
+
+Set `algorithm.vine_advantage_estimator=asharp` and `algorithm.asharp_beta=2.0`
+to use the A-sharp log-moment value and its local segment residual instead.
 
 `vine_mc_samples` is the number of fresh completions per selected prefix.
 `vine_max_points` limits states per original response, including the prompt
@@ -34,9 +37,14 @@ prefix plus sampled suffix as the response to the reward function. Auxiliary
 responses are used only for Monte Carlo estimates; actor updates use the
 original responses.
 
-The state estimate is `H_beta(s) = log(mean(exp(beta * R_k))) / beta`, with the
-ordinary sample mean at beta zero. Each interval between selected states gets
-its observed reward plus the next state's estimate minus the current state's
-estimate. That interval signal is assigned to its original response tokens.
-The finite-sample log-moment estimate is biased; larger `vine_mc_samples`
-reduces sampling error at additional rollout cost.
+In the original VinePPO mode, the state estimate is the sample mean of
+continuation returns. For each selected state, the advantage is the original
+trajectory's observed return from that state minus its MC value estimate.
+This is the paper's gamma=lambda=1 estimator. All tokens in the following
+reasoning segment receive that advantage.
+
+In A-sharp mode, the state estimate is
+`H_beta(s) = log(mean(exp(beta * R_k))) / beta`. Each segment receives its
+observed reward plus the next state's estimate minus the current state's
+estimate. This finite-sample log-moment estimate is biased. Larger
+`vine_mc_samples` reduces sampling error at additional rollout cost.
