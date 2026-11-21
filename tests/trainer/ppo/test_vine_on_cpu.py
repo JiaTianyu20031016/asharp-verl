@@ -32,11 +32,10 @@ def test_mc_entropic_value_and_segment_residuals():
     rewards = torch.tensor([[0.0, 0.0, 1.0]])
     mask = torch.ones_like(rewards)
     values = [[torch.tensor(0.2), torch.tensor(0.8)]]
-    asharp_advantages = compute_vine_advantages(rewards, mask, [[0, 2]], values, estimator="asharp")
-    torch.testing.assert_close(asharp_advantages, torch.tensor([[0.6, 0.6, 0.2]]))
-    mc_advantages = compute_vine_advantages(rewards, mask, [[0, 2]], values, estimator="mc")
-    torch.testing.assert_close(mc_advantages, torch.tensor([[0.8, 0.8, 0.2]]))
+    advantages = compute_vine_advantages(rewards, mask, [[0, 2]], values)
+    torch.testing.assert_close(advantages, torch.tensor([[0.6, 0.6, 0.2]]))
     torch.testing.assert_close(estimate_vine_value(scores, "mc", beta=float("nan")), scores.mean())
+    torch.testing.assert_close(estimate_vine_value(scores, "asharp", beta=2), expected)
 
 
 def test_point_contract_and_validation():
@@ -100,7 +99,7 @@ def test_auxiliary_sampling_and_reordered_advantages(monkeypatch):
                 "vine_advantage_estimator": "asharp",
                 "vine_mc_samples": 2,
                 "vine_max_points": 2,
-                "asharp_beta": 0.0,
+                "asharp_beta": 2.0,
             },
             "actor_rollout_ref": {"rollout": {"n": 1}},
         }
@@ -127,12 +126,13 @@ def test_auxiliary_sampling_and_reordered_advantages(monkeypatch):
         }
     )
     actual = trainer._compute_auxiliary_advantages(batch, auxiliary)
-    torch.testing.assert_close(actual, torch.tensor([[0.5, 0.5, 0.5], [0.5, 0.0, 0.0]]))
+    h = (math.log1p(math.exp(2.0)) - math.log(2.0)) / 2.0
+    torch.testing.assert_close(actual, torch.tensor([[h, h, 1 - h], [1 - h, 0.0, 0.0]]))
 
     trainer.config.algorithm.vine_advantage_estimator = "mc"
     batch.non_tensor_batch["vine_origin_id"] = np.array([1, 0])
     mc_actual = trainer._compute_auxiliary_advantages(batch, auxiliary)
-    torch.testing.assert_close(mc_actual, torch.tensor([[1.0, 1.0, 0.5], [0.5, 0.0, 0.0]]))
+    torch.testing.assert_close(mc_actual, torch.tensor([[0.5, 0.5, 0.5], [0.5, 0.0, 0.0]]))
 
 
 def test_continuation_agent_samples_from_exact_prefix():

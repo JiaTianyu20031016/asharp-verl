@@ -122,8 +122,6 @@ class RayVinePPOTrainer(RayPPOTrainer):
         ordered_estimates = [
             [value.to(device=rewards.device, dtype=rewards.dtype) for value in row] for row in ordered_estimates
         ]
-        advantages = compute_vine_advantages(
-            rewards, batch.batch["response_mask"], ordered_points, ordered_estimates, estimator=estimator
-        )
+        advantages = compute_vine_advantages(rewards, batch.batch["response_mask"], ordered_points, ordered_estimates)
         batch.non_tensor_batch.pop("vine_origin_id")
         return advantages

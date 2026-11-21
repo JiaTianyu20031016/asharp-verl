@@ -86,16 +86,12 @@ def compute_vine_advantages(
     response_mask: torch.Tensor,
     points: list[list[int]],
     state_values: list[list[torch.Tensor]],
-    estimator: str = "asharp",
 ) -> torch.Tensor:
-    """Assign one advantage to each reasoning segment.
+    """Apply the VinePPO neighboring-state residual to each reasoning segment.
 
-    Original VinePPO uses the observed return from the segment's start minus
-    its MC value. A-sharp keeps the local segment reward plus next entropic
-    value minus current entropic value. Values are broadcast over the segment.
+    The value estimate is selected independently: MC mean for the original
+    VinePPO method, or the A-sharp log moment. The terminal value is zero.
     """
-    if estimator not in ("mc", "asharp"):
-        raise ValueError(f"Unsupported Vine advantage estimator: {estimator}")
     if rewards.shape != response_mask.shape or len(points) != rewards.shape[0] or len(state_values) != len(points):
         raise ValueError("Vine reward, mask, point, and value shapes must agree")
     result = torch.zeros_like(rewards)
@@ -107,12 +103,9 @@ def compute_vine_advantages(
             raise ValueError("Vine points must start at zero and be unique, sorted, and nonterminal")
         for idx, start in enumerate(selected):
             end = selected[idx + 1] if idx + 1 < len(selected) else length
-            if estimator == "mc":
-                result[row, start:end] = rewards[row, start:length].sum() - estimates[idx]
-            else:
-                next_value = estimates[idx + 1] if idx + 1 < len(selected) else 0
-                segment_reward = rewards[row, start:end].sum()
-                result[row, start:end] = segment_reward + next_value - estimates[idx]
+            next_value = estimates[idx + 1] if idx + 1 < len(selected) else 0
+            segment_reward = rewards[row, start:end].sum()
+            result[row, start:end] = segment_reward + next_value - estimates[idx]
     if not torch.isfinite(result).all():
         raise ValueError("Vine produced non-finite advantages")
     return result

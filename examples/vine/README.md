@@ -37,14 +37,13 @@ prefix plus sampled suffix as the response to the reward function. Auxiliary
 responses are used only for Monte Carlo estimates; actor updates use the
 original responses.
 
-In the original VinePPO mode, the state estimate is the sample mean of
-continuation returns. For each selected state, the advantage is the original
-trajectory's observed return from that state minus its MC value estimate.
-This is the paper's gamma=lambda=1 estimator. All tokens in the following
-reasoning segment receive that advantage.
+In the original VinePPO mode, the state estimate at each selected point is
+the sample mean of continuation returns. The advantage of a reasoning segment
+is its observed reward plus the next point's MC value minus the current
+point's MC value, matching Equation 6 and the released implementation.
+The terminal state has value zero. All tokens in a segment share its advantage.
 
-In A-sharp mode, the state estimate is
-`H_beta(s) = log(mean(exp(beta * R_k))) / beta`. Each segment receives its
-observed reward plus the next state's estimate minus the current state's
-estimate. This finite-sample log-moment estimate is biased. Larger
+In A-sharp mode, the same neighboring-point residual uses
+`H_beta(s) = log(mean(exp(beta * R_k))) / beta` instead of the MC mean.
+This finite-sample log-moment estimate is biased. Larger
 `vine_mc_samples` reduces sampling error at additional rollout cost.

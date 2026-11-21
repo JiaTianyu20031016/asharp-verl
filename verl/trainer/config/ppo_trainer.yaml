@@ -81,7 +81,7 @@ algorithm:
   # Fixed inverse temperature for the exponential-return critic.
   asharp_beta: 1.0
 
-  # Vine advantage: paper's MC return-minus-value or A-sharp segment residual.
+  # Vine advantage: neighboring-state residual with MC means or A-sharp values.
   vine_advantage_estimator: mc
 
   # Vine samples this many continuations per selected prefix state.
