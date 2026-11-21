@@ -96,6 +96,7 @@ class AdvantageEstimator(str, Enum):
 
     GAE = "gae"
     ASHARP = "asharp"
+    ASHARP_GRPO = "asharp_grpo"
     GRPO = "grpo"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
     REINFORCE_PLUS_PLUS_BASELINE = "reinforce_plus_plus_baseline"
@@ -228,6 +229,19 @@ def compute_asharp_advantage_return(token_level_rewards, values, response_mask, 
     from verl.trainer.ppo.asharp import compute_asharp_from_config
 
     return compute_asharp_from_config(token_level_rewards, values, response_mask, config)
+
+
+@register_adv_est(AdvantageEstimator.ASHARP_GRPO)
+def compute_asharp_grpo_advantage_return(token_level_rewards, response_mask, config, index=None, **kwargs):
+    from verl.trainer.ppo.asharp import compute_asharp_grpo
+
+    return compute_asharp_grpo(
+        token_level_rewards,
+        response_mask,
+        index,
+        config.asharp_beta,
+        normalize_by_std=config.get("norm_adv_by_std_in_grpo", True),
+    )
 
 
 @register_adv_est(AdvantageEstimator.GAE)  # or simply: @register_adv_est("gae")

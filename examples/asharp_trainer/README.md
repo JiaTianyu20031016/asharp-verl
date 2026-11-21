@@ -1,9 +1,10 @@
 # Continuous A-sharp PPO
 
-The same scalar critic head and initialization now output
+The default scalar critic outputs
 `H(s) = log E[exp(beta * G) | s] / beta`. At beta=0 this is an ordinary value
-critic. Beta is fixed throughout a run; binary, graded, negative and dense
-deterministic rewards share this implementation.
+critic. Binary RLVR can instead use the beta-independent success-probability
+critic described below. The entropic-value mode supports binary, graded,
+negative and dense deterministic rewards.
 
 `values` contains H predictions; `returns` contains entropic lambda targets in
 **H units** (`z / beta`, with an explicit beta=0 limit). They no longer contain
@@ -63,6 +64,76 @@ unbiasedness. Exponential propagation may increase variance; no estimator is
 assumed uniformly superior. Actor and critic lambdas are independent.
 
 ## Configuration
+
+### Critic-free A-sharp GRPO from group returns
+
+Set `algorithm.adv_estimator=asharp_grpo` with at least two responses per
+prompt. Let `R_i` be the sum of valid token rewards for response `i`. For
+each group of size `n`, the estimator computes
+`H_beta = log((sum_i exp(beta * R_i)) / n) / beta` and assigns the
+response-action signal `A_i = R_i - H_beta` on all valid tokens. At beta=0,
+`H_0` is the group mean return. For binary returns this exactly reduces to
+`H_beta = log(1 + p_g * (exp(beta) - 1)) / beta`, where `p_g` is the empirical
+success rate. Graded, negative, and summed token rewards are also supported.
+The implementation uses the existing tokenwise PPO/GRPO actor loss and does
+not construct or train a critic.
+
+```text
+algorithm.adv_estimator=asharp_grpo
+algorithm.asharp_beta=2.0
+algorithm.norm_adv_by_std_in_grpo=True
+algorithm.gamma=1.0
+algorithm.use_kl_in_reward=False
+actor_rollout_ref.rollout.n=4
+critic.enable=False
+```
+
+`algorithm.norm_adv_by_std_in_grpo` controls the optional group standard
+deviation scaling after the A-sharp signal is computed. With `True`, each
+signal is divided by the group's return standard deviation plus `1e-6`; with
+`False`, it is left unscaled. No additional group mean subtraction is applied:
+that would remove the shared `H_beta` baseline and erase beta dependence.
+At beta=0, this reproduces ordinary GRPO for groups of at least two responses,
+with the same scaling switch.
+
+The A-sharp **signal** is exact at the response-action level when the true
+return log moment is known; the group log moment is its sample estimate. Its
+plug-in gradient is nevertheless the
+ordinary policy gradient in the population limit: the shared baseline
+`H_beta(p)` cancels under the sequence score expectation. Reusing the same
+finite group to estimate the baseline introduces sample coupling, so beta
+effects in this implementation can reflect finite-group bias and PPO clipping.
+The proposal's beta-dependent token-level direction requires prefix-conditional
+success probabilities. A response-level fixed-target or exponential-weighted
+actor objective would be a different training rule from the current GRPO loss.
+
+### Binary RLVR with a PPO value critic
+
+For a terminal reward in `{0, 1}`, the critic can predict the ordinary
+success probability `p(s) = E[G | s]`. A-sharp then uses the exact Bernoulli
+transform `H_beta(p) = log(1 + p * (exp(beta) - 1)) / beta`, with `H_0(p) = p`.
+This keeps critic training labels, PPO value loss and checkpoint semantics
+independent of beta. Only actor advantages change with beta. Predictions are
+clamped to `[0, 1]` for this transform; critic regression uses the raw head.
+
+Use these overrides with the same PPO run settings at each beta:
+
+```text
+algorithm.adv_estimator=asharp
+algorithm.asharp_binary_value_critic=True
+algorithm.asharp_beta=2.0
+algorithm.gamma=1.0
+algorithm.use_kl_in_reward=False
+critic.value_type=value
+```
+
+`algorithm.lam_critic` controls ordinary GAE targets; `algorithm.lam_policy`
+and `algorithm.asharp_actor_estimator` control the actor trace as below. The
+mode checks that nonzero rewards occur only at the final response token and
+are exactly 1. Binary-value critic checkpoints can be reused across beta
+values; entropic-value checkpoints cannot be loaded as binary-value heads.
+
+### Entropic-value critic
 
 Add these overrides to an existing single-turn FSDP/FSDP2 PPO run:
 

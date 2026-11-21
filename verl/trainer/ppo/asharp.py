@@ -12,19 +12,125 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Continuous entropic-value critic and A-sharp trajectory estimators.
+"""A-sharp estimators with entropic, binary-value, or group baselines.
 
-The head outputs H = log E[exp(beta G)] / beta, with its value limit at beta=0.
-Targets are also in H units. Final valid tokens terminate the scored episode.
+For the entropic critic, H = log E[exp(beta G)] / beta and targets are in H
+units. Final valid tokens terminate the scored episode.
 """
 
 import math
 import warnings
+from collections import defaultdict
 
 import torch
 
 ACTOR_ESTIMATORS = ("log_plugin", "residual_gae", "residual_exp")
 VALUE_TYPES = ("entropic_value", "log_moment")  # latter is a deprecated config alias
+
+
+def _binary_terminal_rewards(rewards, response_mask, beta):
+    rewards, _, valid = _inputs(rewards, torch.zeros_like(rewards), response_mask, beta)
+    if not valid.any(dim=1).all():
+        raise ValueError("Binary A-sharp requires at least one response token per sample")
+    lengths = valid.sum(dim=1) - 1
+    terminal = torch.zeros_like(valid).scatter_(1, lengths[:, None], True)
+    if torch.any(rewards.masked_fill(terminal, 0) != 0) or torch.any(
+        (rewards[terminal] != 0) & (rewards[terminal] != 1)
+    ):
+        raise ValueError("Binary A-sharp requires a terminal reward in {0, 1} and zero earlier rewards")
+    return rewards, valid, rewards[terminal]
+
+
+def binary_value_to_entropic(values, beta):
+    """Convert Bernoulli success probabilities to log-moment values."""
+    _check_beta(beta)
+    p = values.clamp(0, 1)
+    if beta == 0:
+        return p
+    if beta < 1e-3:
+        # Avoid cancellation when the log-moment approaches its mean limit.
+        return p + beta * p * (1 - p) * (0.5 + beta * (1 - 2 * p) / 6)
+    if beta < 80:
+        return torch.log1p(p * math.expm1(beta)) / beta
+    return torch.logaddexp(torch.log1p(-p), torch.log(p) + beta) / beta
+
+
+def _empirical_entropic_value(scores, beta):
+    """Stable log(mean(exp(beta * return))) / beta for one response group."""
+    mean = scores.mean()
+    if beta == 0:
+        return mean
+    centered = scores - mean
+    if beta * centered.abs().max() < 1e-3:
+        variance = centered.square().mean()
+        third_moment = centered.pow(3).mean()
+        return mean + 0.5 * beta * variance + (beta * beta / 6) * third_moment
+    maximum = scores.max()
+    return maximum + (torch.logsumexp(beta * (scores - maximum), dim=0) - math.log(scores.numel())) / beta
+
+
+def compute_binary_value_asharp(
+    rewards,
+    values,
+    response_mask,
+    beta,
+    lam_critic=1.0,
+    lam_actor=0.0,
+    actor_estimator="residual_exp",
+    normalize_advantages=False,
+):
+    """A-sharp actor signal from a PPO success-probability critic.
+
+    The critic target stays in ordinary expected-reward units and is independent
+    of beta. Only the actor uses the Bernoulli log-moment transform.
+    """
+    rewards, values, _ = _inputs(rewards, values, response_mask, beta)
+    _binary_terminal_rewards(rewards, response_mask, beta)
+    entropic_values = binary_value_to_entropic(values, beta)
+    advantages, _ = compute_asharp(
+        rewards,
+        entropic_values,
+        response_mask,
+        beta,
+        lam_critic,
+        lam_actor,
+        actor_estimator,
+        normalize_advantages,
+    )
+    _, targets = compute_asharp(rewards, values, response_mask, 0.0, lam_critic)
+    return advantages, targets
+
+
+@torch.no_grad()
+def compute_asharp_grpo(rewards, response_mask, index, beta, *, normalize_by_std=True, epsilon=1e-6):
+    """Response-action A-sharp using each prompt group's empirical returns.
+
+    Every response receives R_i - log(mean_j exp(beta R_j)) / beta, broadcast
+    to its tokens. The group log moment estimates the prompt's value.
+    """
+    rewards, _, valid = _inputs(rewards, torch.zeros_like(rewards), response_mask, beta)
+    if not valid.any(dim=1).all():
+        raise ValueError("A-sharp GRPO requires at least one response token per sample")
+    scores = rewards.sum(dim=-1)
+    if not torch.isfinite(scores).all():
+        raise ValueError("A-sharp GRPO requires finite response returns")
+    if index is None or len(index) != len(scores):
+        raise ValueError("A-sharp GRPO requires one group id per response")
+    groups = defaultdict(list)
+    for i, group_id in enumerate(index):
+        groups[group_id].append(i)
+    advantages = torch.empty_like(scores)
+    for members in groups.values():
+        if len(members) < 2:
+            raise ValueError("A-sharp GRPO requires at least two responses per group")
+        group_scores = scores[members]
+        baseline = _empirical_entropic_value(group_scores, beta)
+        group_advantages = group_scores - baseline
+        if normalize_by_std:
+            group_advantages = group_advantages / (group_scores.std() + epsilon)
+        advantages[members] = group_advantages
+    advantages = advantages[:, None] * valid.to(advantages.dtype)
+    return advantages, advantages
 
 
 def _check_beta(beta):
@@ -257,7 +363,8 @@ def resolve_asharp_lambdas(config):
 def compute_asharp_from_config(rewards, values, response_mask, config):
     """Shared driver entry for initial estimation and optional post-update refresh."""
     policy_lam, critic_lam = resolve_asharp_lambdas(config)
-    return compute_asharp(
+    estimator = compute_binary_value_asharp if config.get("asharp_binary_value_critic", False) else compute_asharp
+    return estimator(
         rewards,
         values,
         response_mask,
@@ -272,8 +379,13 @@ def compute_asharp_from_config(rewards, values, response_mask, config):
 def validate_asharp_config(config):
     """Fail before workers start when critic semantics or task assumptions differ."""
     algo, critic = config.algorithm, config.critic
-    if algo.adv_estimator != "asharp" or critic.get("value_type", "value") not in VALUE_TYPES:
-        raise ValueError("Use algorithm.adv_estimator=asharp with critic.value_type=entropic_value")
+    binary_value = algo.get("asharp_binary_value_critic", False)
+    expected_types = ("value",) if binary_value else VALUE_TYPES
+    if algo.adv_estimator != "asharp" or critic.get("value_type", "value") not in expected_types:
+        raise ValueError(
+            "Binary-value A-sharp requires critic.value_type=value; "
+            "ordinary A-sharp requires critic.value_type=entropic_value"
+        )
     if critic.value_type == "log_moment":
         warnings.warn(
             "value_type=log_moment is deprecated; use entropic_value (head outputs H, not u)",
@@ -284,10 +396,10 @@ def validate_asharp_config(config):
         raise ValueError("A-sharp requires a critic")
     if critic.strategy not in ("fsdp", "fsdp2"):
         raise ValueError("A-sharp currently supports FSDP/FSDP2 critics only")
-    if critic.get("log_moment_loss", "mse") not in ("mse", "positive"):
+    if not binary_value and critic.get("log_moment_loss", "mse") not in ("mse", "positive"):
         raise ValueError("critic.log_moment_loss must be mse or positive")
     _check_beta(algo.asharp_beta)
-    if critic.get("asharp_beta", algo.asharp_beta) != algo.asharp_beta:
+    if not binary_value and critic.get("asharp_beta", algo.asharp_beta) != algo.asharp_beta:
         raise ValueError("critic.asharp_beta must equal algorithm.asharp_beta")
     resolve_asharp_lambdas(algo)
     if algo.get("asharp_actor_estimator", "residual_exp") not in ACTOR_ESTIMATORS:
@@ -306,36 +418,74 @@ def validate_asharp_config(config):
         raise ValueError("A-sharp does not support rejection masks in critic targets")
     adapter = critic.get("model", {}).get("lora_adapter_path")
     if adapter:
-        check_asharp_checkpoint(adapter, algo.asharp_beta)
+        check_asharp_checkpoint(adapter, algo.asharp_beta, binary_value=binary_value)
 
 
-def save_asharp_checkpoint(directory, beta):
+def validate_asharp_grpo_config(config):
+    """Check assumptions for the critic-free group return estimator."""
+    algo = config.algorithm
+    if algo.adv_estimator != "asharp_grpo":
+        raise ValueError("Use algorithm.adv_estimator=asharp_grpo")
+    _check_beta(algo.asharp_beta)
+    if algo.gamma != 1:
+        raise ValueError("A-sharp GRPO requires gamma=1")
+    if algo.use_kl_in_reward:
+        raise ValueError("A-sharp GRPO requires task rewards without KL shaping")
+    if algo.get("use_pf_ppo", False):
+        raise ValueError("PF-PPO reweighting is not implemented for A-sharp GRPO")
+    if config.critic.enable is True:
+        raise ValueError("A-sharp GRPO does not use a critic; set critic.enable=False")
+    rollout = config.actor_rollout_ref.rollout
+    if rollout.n < 2:
+        raise ValueError("A-sharp GRPO requires rollout.n >= 2")
+    if rollout.get("multi_turn", {}).get("enable", False):
+        raise ValueError("A-sharp GRPO currently supports single-turn tasks only")
+
+
+def save_asharp_checkpoint(directory, beta, *, binary_value=False):
     """Persist fixed temperature and versioned head/target units."""
     import json
     from pathlib import Path
 
     path = Path(directory)
     path.mkdir(parents=True, exist_ok=True)
-    metadata = (
-        json.dumps(
-            {"version": 2, "value_type": "entropic_value", "parameterization": "H", "target_units": "H", "beta": beta}
-        )
-        + "\n"
+    meta = (
+        {"version": 3, "value_type": "value", "parameterization": "p", "target_units": "p", "beta_independent": True}
+        if binary_value
+        else {"version": 2, "value_type": "entropic_value", "parameterization": "H", "target_units": "H", "beta": beta}
     )
+    metadata = json.dumps(meta) + "\n"
     (path / "asharp_meta.json").write_text(metadata)
     if (path / "lora_adapter").is_dir():
         (path / "lora_adapter" / "asharp_meta.json").write_text(metadata)
 
 
-def check_asharp_checkpoint(directory, beta):
-    """Reject old u heads and changed beta rather than silently changing dynamics."""
+def check_asharp_checkpoint(directory, beta, *, binary_value=False):
+    """Check critic units, allowing a binary-value head across beta values."""
     import json
     from pathlib import Path
 
     path = Path(directory) / "asharp_meta.json"
     if not path.exists():
-        raise ValueError(f"Missing entropic critic metadata: {path}")
+        units = "success probability p" if binary_value else "H"
+        warnings.warn(
+            f"Missing A-sharp critic metadata at {path}; interpreting the loaded critic output as {units}",
+            UserWarning,
+            stacklevel=2,
+        )
+        return
     meta = json.loads(path.read_text())
+    if binary_value:
+        expected = {
+            "version": 3,
+            "value_type": "value",
+            "parameterization": "p",
+            "target_units": "p",
+            "beta_independent": True,
+        }
+        if meta != expected:
+            raise ValueError("Incompatible A-sharp critic checkpoint: expected a binary success-probability head")
+        return
     if (
         meta.get("version") != 2
         or meta.get("parameterization") != "H"
@@ -343,5 +493,15 @@ def check_asharp_checkpoint(directory, beta):
         or meta.get("value_type") != "entropic_value"
     ):
         raise ValueError("Incompatible critic parameterization: old u/log-moment checkpoints need explicit migration")
-    if meta.get("beta") != beta:
-        raise ValueError("A-sharp checkpoint fixed beta differs from this run")
+    if "beta" not in meta:
+        warnings.warn(
+            f"A-sharp critic metadata at {path} has no beta; loading with beta={beta}",
+            UserWarning,
+            stacklevel=2,
+        )
+    elif meta["beta"] != beta:
+        warnings.warn(
+            f"A-sharp critic beta={meta['beta']} differs from current beta={beta}; loading the saved H head",
+            UserWarning,
+            stacklevel=2,
+        )

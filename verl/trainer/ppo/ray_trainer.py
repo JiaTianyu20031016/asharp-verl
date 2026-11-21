@@ -936,13 +936,18 @@ class RayPPOTrainer:
             if self.config.algorithm.adv_estimator == AdvantageEstimator.ASHARP:
                 from verl.trainer.ppo.asharp import save_asharp_checkpoint
 
-                save_asharp_checkpoint(critic_local_path, self.config.algorithm.asharp_beta)
+                save_asharp_checkpoint(
+                    critic_local_path,
+                    self.config.algorithm.asharp_beta,
+                    binary_value=self.config.algorithm.get("asharp_binary_value_critic", False),
+                )
 
-        # save dataloader
-        local_mkdir_safe(local_global_step_folder)
-        dataloader_local_path = os.path.join(local_global_step_folder, "data.pt")
-        dataloader_state_dict = self.train_dataloader.state_dict()
-        torch.save(dataloader_state_dict, dataloader_local_path)
+        # Adapter-only experiment checkpoints can omit the sampler state.
+        if self.config.trainer.get("save_dataloader_state", True):
+            local_mkdir_safe(local_global_step_folder)
+            dataloader_local_path = os.path.join(local_global_step_folder, "data.pt")
+            dataloader_state_dict = self.train_dataloader.state_dict()
+            torch.save(dataloader_state_dict, dataloader_local_path)
 
         # latest checkpointed iteration tracker (for atomic usage)
         if (
@@ -1001,7 +1006,11 @@ class RayPPOTrainer:
         if self.config.algorithm.adv_estimator == AdvantageEstimator.ASHARP:
             from verl.trainer.ppo.asharp import check_asharp_checkpoint
 
-            check_asharp_checkpoint(critic_path, self.config.algorithm.asharp_beta)
+            check_asharp_checkpoint(
+                critic_path,
+                self.config.algorithm.asharp_beta,
+                binary_value=self.config.algorithm.get("asharp_binary_value_critic", False),
+            )
         elif os.path.exists(os.path.join(critic_path, "asharp_meta.json")):
             raise ValueError("Cannot resume a log-moment critic as an ordinary value critic")
         # load actor

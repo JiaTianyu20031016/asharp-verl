@@ -22,8 +22,10 @@ from omegaconf import OmegaConf
 
 from verl import DataProto
 from verl.trainer.ppo.asharp import (
+    binary_value_to_entropic,
     check_asharp_checkpoint,
     compute_asharp,
+    compute_binary_value_asharp,
     compute_log_moment_loss,
     save_asharp_checkpoint,
     validate_asharp_config,
@@ -81,6 +83,32 @@ def test_binary_specialization_and_small_beta_limit():
     values = torch.log1p(math.expm1(beta) * p) / beta
     adv, _ = compute_asharp(torch.tensor([[0.0, 1.0]]), values, torch.ones_like(p), beta, 0.9)
     torch.testing.assert_close(adv, torch.tensor([[0.3, 0.4]], dtype=torch.float64), atol=2e-5, rtol=0)
+
+
+@pytest.mark.parametrize("beta", [0.0, 1e-8, 0.7, 2.0, 100.0])
+def test_binary_value_critic_matches_entropic_actor_and_ppo_targets(beta):
+    rewards = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, float("nan")]], dtype=torch.float64)
+    values = torch.tensor([[0.2, 0.4, 0.7], [0.9, 0.3, float("nan")]], dtype=torch.float64)
+    mask = torch.tensor([[1, 1, 1], [1, 1, 0]])
+    adv, targets = compute_binary_value_asharp(rewards, values, mask, beta, 0.8, 0.0)
+    h = binary_value_to_entropic(values.nan_to_num(), beta)
+    expected_adv, _ = compute_asharp(rewards, h, mask, beta, 0.8, 0.0)
+    _, expected_targets = compute_asharp(rewards, values, mask, 0.0, 0.8)
+    torch.testing.assert_close(adv, expected_adv)
+    torch.testing.assert_close(targets, expected_targets)
+    assert torch.isfinite(adv).all()
+    assert torch.isfinite(targets).all()
+    if beta == 0:
+        next_values = torch.tensor([[0.4, 0.7, 0.0], [0.3, 0.0, 0.0]])
+        expected = (rewards.nan_to_num() + next_values - values.nan_to_num()) * mask
+        torch.testing.assert_close(adv, expected)
+
+
+def test_binary_value_critic_rejects_nonbinary_or_nonterminal_rewards():
+    values = torch.full((1, 2), 0.5)
+    for rewards in (torch.tensor([[0.2, 1.0]]), torch.tensor([[0.0, 0.5]])):
+        with pytest.raises(ValueError, match="terminal reward"):
+            compute_binary_value_asharp(rewards, values, torch.ones_like(values), 1.0)
 
 
 @pytest.mark.parametrize("mode", ["mse", "positive"])
@@ -173,12 +201,71 @@ def test_invalid_configuration(path, value):
 
 
 def test_checkpoint_temperature_and_semantics(tmp_path):
-    with pytest.raises(ValueError, match="metadata"):
+    with pytest.warns(UserWarning, match="Missing A-sharp critic metadata"):
         check_asharp_checkpoint(tmp_path, 1.0)
     save_asharp_checkpoint(tmp_path, 1.0)
     check_asharp_checkpoint(tmp_path, 1.0)
-    with pytest.raises(ValueError, match="beta"):
+    with pytest.warns(UserWarning, match="differs from current beta"):
         check_asharp_checkpoint(tmp_path, 2.0)
+
+
+def test_binary_value_checkpoint_is_beta_independent_and_incompatible_with_entropic(tmp_path):
+    save_asharp_checkpoint(tmp_path, 0.7, binary_value=True)
+    check_asharp_checkpoint(tmp_path, 100.0, binary_value=True)
+    with pytest.raises(ValueError, match="Incompatible critic parameterization"):
+        check_asharp_checkpoint(tmp_path, 0.7)
+
+
+def test_binary_value_config_dispatch():
+    cfg = config()
+    cfg.algorithm.asharp_binary_value_critic = True
+    cfg.critic.value_type = "value"
+    validate_asharp_config(cfg)
+    batch = DataProto.from_single_dict(
+        {
+            "token_level_rewards": torch.tensor([[0.0, 1.0]]),
+            "values": torch.tensor([[0.2, 0.4]]),
+            "response_mask": torch.ones(1, 2),
+        }
+    )
+    result = compute_advantage(batch, "asharp", config=cfg.algorithm)
+    expected_adv, expected_targets = compute_binary_value_asharp(
+        batch.batch["token_level_rewards"],
+        batch.batch["values"],
+        batch.batch["response_mask"],
+        cfg.algorithm.asharp_beta,
+        cfg.algorithm.lam_critic,
+        1.0,
+    )
+    torch.testing.assert_close(result.batch["advantages"], expected_adv)
+    torch.testing.assert_close(result.batch["returns"], expected_targets)
+    cfg.critic.value_type = "entropic_value"
+    with pytest.raises(ValueError, match="critic.value_type=value"):
+        validate_asharp_config(cfg)
+
+
+def test_missing_or_mismatched_critic_beta_warns_during_initialization(tmp_path):
+    cfg = config()
+    cfg.algorithm.asharp_beta = 0.0
+    cfg.critic.model = {"lora_adapter_path": str(tmp_path)}
+    with pytest.warns(UserWarning, match="Missing A-sharp critic metadata"):
+        validate_asharp_config(cfg)
+    with pytest.warns(UserWarning, match="Missing A-sharp critic metadata"):
+        check_asharp_checkpoint(tmp_path, 0.0)
+    cfg.algorithm.asharp_beta = 0.7
+    with pytest.warns(UserWarning, match="Missing A-sharp critic metadata"):
+        validate_asharp_config(cfg)
+    save_asharp_checkpoint(tmp_path, 0.0)
+    with pytest.warns(UserWarning, match="differs from current beta"):
+        validate_asharp_config(cfg)
+
+
+def test_critic_metadata_without_beta_warns(tmp_path):
+    (tmp_path / "asharp_meta.json").write_text(
+        '{"version":2,"value_type":"entropic_value","parameterization":"H","target_units":"H"}'
+    )
+    with pytest.warns(UserWarning, match="has no beta"):
+        check_asharp_checkpoint(tmp_path, 0.7)
 
 
 def test_internal_mask_holes_rejected():

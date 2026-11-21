@@ -75,11 +75,17 @@ algorithm:
   # Critic-return GAE lambda. If null, falls back to algorithm.lam.
   lam_critic: null
 
-  # Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", etc.
+  # Advantage estimator type: "gae", "grpo", "asharp_grpo", etc.
   adv_estimator: gae
 
   # Fixed inverse temperature for the exponential-return critic.
   asharp_beta: 1.0
+
+  # Fit ordinary success probability with PPO's value loss, then transform it
+  # into the binary-return A-sharp signal at the selected beta.
+  # Requires critic.value_type=value and terminal rewards in {0, 1}.
+  asharp_binary_value_critic: false
+
 
   # log_plugin, residual_gae, or residual_exp; lam_policy=0 gives one-step A-sharp.
   asharp_actor_estimator: residual_exp
@@ -204,6 +210,9 @@ trainer:
 
   # Default local directory for saving checkpoints
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
+
+  # Save sampler state as data.pt; disable for adapter-only checkpoints.
+  save_dataloader_state: True
 
   # Maximum number of actor checkpoints to keep
   max_actor_ckpt_to_keep: null
