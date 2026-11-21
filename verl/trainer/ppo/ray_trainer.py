@@ -1286,6 +1286,14 @@ class RayPPOTrainer:
             critic_output = self.critic_wg.update_critic(batch)
         return critic_output
 
+    def _generate_auxiliary_rollouts(self, gen_batch: DataProto, gen_batch_output: DataProto):
+        """Extension point for algorithms that sample from generated prefixes."""
+        return None
+
+    def _compute_auxiliary_advantages(self, batch: DataProto, auxiliary_rollouts):
+        """Return precomputed actor advantages, or None for standard estimators."""
+        return None
+
     def fit(self):
         """
         The training loop of PPO.
@@ -1382,6 +1390,7 @@ class RayPPOTrainer:
                         if curr_step_profile:
                             self.async_rollout_manager.start_profile()
                         gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
+                        auxiliary_rollouts = self._generate_auxiliary_rollouts(gen_batch, gen_batch_output)
                         self.checkpoint_manager.sleep_replicas()
                         if curr_step_profile:
                             self.async_rollout_manager.stop_profile()
@@ -1546,17 +1555,22 @@ class RayPPOTrainer:
                             "norm_adv_by_std_in_grpo", True
                         )  # GRPO adv normalization factor
 
-                        batch = compute_advantage(
-                            batch,
-                            adv_estimator=self.config.algorithm.adv_estimator,
-                            gamma=self.config.algorithm.gamma,
-                            lam=self.config.algorithm.lam,
-                            lam_policy=self.config.algorithm.get("lam_policy", None),
-                            lam_critic=self.config.algorithm.get("lam_critic", None),
-                            num_repeat=self.config.actor_rollout_ref.rollout.n,
-                            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                            config=self.config.algorithm,
-                        )
+                        auxiliary_advantages = self._compute_auxiliary_advantages(batch, auxiliary_rollouts)
+                        if auxiliary_advantages is None:
+                            batch = compute_advantage(
+                                batch,
+                                adv_estimator=self.config.algorithm.adv_estimator,
+                                gamma=self.config.algorithm.gamma,
+                                lam=self.config.algorithm.lam,
+                                lam_policy=self.config.algorithm.get("lam_policy", None),
+                                lam_critic=self.config.algorithm.get("lam_critic", None),
+                                num_repeat=self.config.actor_rollout_ref.rollout.n,
+                                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+                                config=self.config.algorithm,
+                            )
+                        else:
+                            batch.batch["advantages"] = auxiliary_advantages
+                            batch.batch["returns"] = auxiliary_advantages
                     # update critic
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):

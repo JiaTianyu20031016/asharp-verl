@@ -608,6 +608,8 @@ class AlgoConfig(BaseConfig):
     adv_estimator: str = "gae"
     # Fixed lookahead temperature; trace decays use lam_policy/lam_critic above.
     asharp_beta: float = 1.0
+    vine_mc_samples: int = 4
+    vine_max_points: int = 8
     asharp_actor_estimator: str = "residual_exp"
     asharp_normalize_advantages: bool = False
     # Opt into a second critic inference after fitting this rollout batch.

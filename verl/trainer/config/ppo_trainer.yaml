@@ -75,11 +75,17 @@ algorithm:
   # Critic-return GAE lambda. If null, falls back to algorithm.lam.
   lam_critic: null
 
-  # Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", etc.
+  # Advantage estimator type: "gae", "grpo", "asharp_vine", etc.
   adv_estimator: gae
 
   # Fixed inverse temperature for the exponential-return critic.
   asharp_beta: 1.0
+
+  # A-sharp Vine samples this many continuations per selected prefix state.
+  vine_mc_samples: 4
+
+  # Maximum prefix states per original response, including the prompt state.
+  vine_max_points: 8
 
   # log_plugin, residual_gae, or residual_exp; lam_policy=0 gives one-step A-sharp.
   asharp_actor_estimator: residual_exp
