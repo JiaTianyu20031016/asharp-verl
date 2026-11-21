@@ -34,8 +34,8 @@ def test_mc_entropic_value_and_segment_residuals():
     values = [[torch.tensor(0.2), torch.tensor(0.8)]]
     advantages = compute_vine_advantages(rewards, mask, [[0, 2]], values)
     torch.testing.assert_close(advantages, torch.tensor([[0.6, 0.6, 0.2]]))
-    torch.testing.assert_close(estimate_vine_value(scores, "mc", beta=float("nan")), scores.mean())
-    torch.testing.assert_close(estimate_vine_value(scores, "asharp", beta=2), expected)
+    torch.testing.assert_close(estimate_vine_value(scores, "vine_mc", beta=float("nan")), scores.mean())
+    torch.testing.assert_close(estimate_vine_value(scores, "vine_asharp", beta=2), expected)
 
 
 def test_point_contract_and_validation():
@@ -53,8 +53,7 @@ def test_vine_config_requires_critic_free_unshaped_rewards():
     cfg = OmegaConf.create(
         {
             "algorithm": {
-                "adv_estimator": "vine",
-                "vine_advantage_estimator": "mc",
+                "adv_estimator": "vine_mc",
                 "asharp_beta": 2.0,
                 "vine_mc_samples": 2,
                 "vine_max_points": 3,
@@ -69,14 +68,18 @@ def test_vine_config_requires_critic_free_unshaped_rewards():
     cfg.critic.enable = True
     with pytest.raises(ValueError, match="does not use a critic"):
         validate_vine_config(cfg)
+    cfg.critic.enable = False
+    cfg.algorithm.adv_estimator = "vine_asharp"
+    validate_vine_config(cfg)
 
 
-def test_full_config_selects_critic_free_vine():
+@pytest.mark.parametrize("estimator", ["vine_mc", "vine_asharp"])
+def test_full_config_selects_critic_free_vine(estimator):
     config_dir = str(Path(__file__).resolve().parents[3] / "verl/trainer/config")
     with initialize_config_dir(config_dir=config_dir, version_base=None):
         config = compose(
             config_name="ppo_trainer",
-            overrides=["algorithm.adv_estimator=vine", "critic.enable=False"],
+            overrides=[f"algorithm.adv_estimator={estimator}", "critic.enable=False"],
         )
     assert need_critic(config) is False
 
@@ -96,7 +99,7 @@ def test_auxiliary_sampling_and_reordered_advantages(monkeypatch):
     trainer.config = OmegaConf.create(
         {
             "algorithm": {
-                "vine_advantage_estimator": "asharp",
+                "adv_estimator": "vine_asharp",
                 "vine_mc_samples": 2,
                 "vine_max_points": 2,
                 "asharp_beta": 2.0,
@@ -129,7 +132,7 @@ def test_auxiliary_sampling_and_reordered_advantages(monkeypatch):
     h = (math.log1p(math.exp(2.0)) - math.log(2.0)) / 2.0
     torch.testing.assert_close(actual, torch.tensor([[h, h, 1 - h], [1 - h, 0.0, 0.0]]))
 
-    trainer.config.algorithm.vine_advantage_estimator = "mc"
+    trainer.config.algorithm.adv_estimator = "vine_mc"
     batch.non_tensor_batch["vine_origin_id"] = np.array([1, 0])
     mc_actual = trainer._compute_auxiliary_advantages(batch, auxiliary)
     torch.testing.assert_close(mc_actual, torch.tensor([[0.5, 0.5, 0.5], [0.5, 0.0, 0.0]]))

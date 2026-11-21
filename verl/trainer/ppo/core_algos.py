@@ -96,7 +96,8 @@ class AdvantageEstimator(str, Enum):
 
     GAE = "gae"
     ASHARP = "asharp"
-    VINE = "vine"
+    VINE_MC = "vine_mc"
+    VINE_ASHARP = "vine_asharp"
     GRPO = "grpo"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
     REINFORCE_PLUS_PLUS_BASELINE = "reinforce_plus_plus_baseline"

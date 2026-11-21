@@ -85,7 +85,7 @@ def need_reward_model(
 
 def need_critic(config: DictConfig) -> bool:
     """Given a config, do we need critic."""
-    if config.algorithm.adv_estimator == AdvantageEstimator.VINE:
+    if config.algorithm.adv_estimator in (AdvantageEstimator.VINE_MC, AdvantageEstimator.VINE_ASHARP):
         from verl.trainer.ppo.vine_trainer import validate_vine_config
 
         validate_vine_config(config)

@@ -12,8 +12,7 @@ Use a single-turn, text-only PPO run with a terminal task reward that scores
 the full response. Add these overrides:
 
 ```text
-algorithm.adv_estimator=vine
-algorithm.vine_advantage_estimator=mc
+algorithm.adv_estimator=vine_mc
 algorithm.vine_mc_samples=4
 algorithm.vine_max_points=8
 algorithm.gamma=1.0
@@ -21,7 +20,7 @@ algorithm.use_kl_in_reward=False
 critic.enable=False
 ```
 
-Set `algorithm.vine_advantage_estimator=asharp` and `algorithm.asharp_beta=2.0`
+Set `algorithm.adv_estimator=vine_asharp` and `algorithm.asharp_beta=2.0`
 to use the A-sharp log-moment value and its local segment residual instead.
 
 `vine_mc_samples` is the number of fresh completions per selected prefix.

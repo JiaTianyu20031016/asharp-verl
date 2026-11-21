@@ -61,9 +61,9 @@ def estimate_vine_value(returns: torch.Tensor, estimator: str, beta: float) -> t
     """Estimate a prefix value with ordinary MC or the A-sharp log moment."""
     if returns.ndim != 1 or returns.numel() == 0 or not torch.isfinite(returns).all():
         raise ValueError("Vine requires a nonempty vector of finite Monte Carlo returns")
-    if estimator == "mc":
+    if estimator == "vine_mc":
         return returns.mean()
-    if estimator == "asharp":
+    if estimator == "vine_asharp":
         return mc_entropic_value(returns, beta)
     raise ValueError(f"Unsupported Vine value estimator: {estimator}")
 

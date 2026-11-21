@@ -19,11 +19,9 @@ from verl.trainer.ppo.vine_algos import (
 def validate_vine_config(config) -> None:
     """Reject modes whose rewards or trajectories cannot be interpreted here."""
     algo = config.algorithm
-    if algo.adv_estimator != "vine":
-        raise ValueError("Vine requires algorithm.adv_estimator=vine")
-    if algo.vine_advantage_estimator not in ("mc", "asharp"):
-        raise ValueError("Vine advantage estimator must be mc or asharp")
-    if algo.vine_advantage_estimator == "asharp" and (not math.isfinite(algo.asharp_beta) or algo.asharp_beta < 0):
+    if algo.adv_estimator not in ("vine_mc", "vine_asharp"):
+        raise ValueError("Vine requires algorithm.adv_estimator=vine_mc or vine_asharp")
+    if algo.adv_estimator == "vine_asharp" and (not math.isfinite(algo.asharp_beta) or algo.asharp_beta < 0):
         raise ValueError("Vine requires a finite, nonnegative asharp_beta")
     if not isinstance(algo.vine_mc_samples, int) or algo.vine_mc_samples < 1:
         raise ValueError("Vine requires vine_mc_samples >= 1")
@@ -101,7 +99,7 @@ class RayVinePPOTrainer(RayPPOTrainer):
             raise ValueError("Vine Monte Carlo rewards must be finite")
 
         k = self.config.algorithm.vine_mc_samples
-        estimator = self.config.algorithm.vine_advantage_estimator
+        estimator = self.config.algorithm.adv_estimator
         beta = self.config.algorithm.asharp_beta
         estimates = {row: [] for row in range(len(original_points))}
         cursor = 0

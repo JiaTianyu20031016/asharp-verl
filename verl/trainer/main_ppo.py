@@ -340,7 +340,7 @@ class TaskRunner:
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         # Initialize the PPO trainer.
-        if config.algorithm.adv_estimator == "vine":
+        if config.algorithm.adv_estimator in ("vine_mc", "vine_asharp"):
             from verl.trainer.ppo.vine_trainer import RayVinePPOTrainer
 
             trainer_cls = RayVinePPOTrainer
