@@ -1,8 +1,4 @@
-"""Monte Carlo value estimates for selected response-prefix states.
-
-The selector is intentionally left open: different projects can define what a
-reasoning step or other useful continuation point means for their data.
-"""
+"""Monte Carlo value estimates for selected response-prefix states."""
 
 import math
 
@@ -10,14 +6,44 @@ import torch
 
 
 def select_mc_points(response_ids: torch.Tensor, response_mask: torch.Tensor, tokenizer, config) -> list[list[int]]:
-    """Return token offsets for states to sample, one list per original response.
+    """Select response prefixes immediately after blank-line step separators.
 
     An offset ``p`` denotes the state after the first ``p`` valid response
-    tokens. Offset zero is added by the trainer, so implementations only need
-    to return additional points in ``[1, response_length)``. A point at the
-    terminal state has no continuation and must not be returned.
+    tokens. The prompt state at offset zero is added by the trainer. Vine's
+    MATH prompt asks for two newline characters between reasoning steps.
     """
-    raise NotImplementedError("Implement select_mc_points for the task's reasoning traces")
+    budget = config.vine_max_points - 1
+    selected = []
+    for ids, mask in zip(response_ids, response_mask, strict=True):
+        length = int(mask.sum().item())
+        if budget <= 0 or length < 2:
+            selected.append([])
+            continue
+
+        # Decode one token at a time so every returned boundary is an exact
+        # token offset; decoding the whole response loses that mapping.
+        pieces = [
+            tokenizer.decode([token_id], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            for token_id in ids[:length].tolist()
+        ]
+        has_text_after = False
+        candidates = []
+        # A separator can be one token or span two adjacent tokens.
+        trailing_newlines = []
+        tail = ""
+        for piece in pieces:
+            tail = (tail + piece)[-2:]
+            trailing_newlines.append(tail)
+        for index in range(length - 1, 0, -1):
+            has_text_after |= bool(pieces[index].strip())
+            if has_text_after and trailing_newlines[index - 1] == "\n\n":
+                candidates.append(index)
+        candidates.reverse()
+
+        if len(candidates) > budget:
+            candidates = [candidates[(index + 1) * len(candidates) // (budget + 1)] for index in range(budget)]
+        selected.append(candidates)
+    return selected
 
 
 def validate_mc_points(points: list[list[int]], response_mask: torch.Tensor, max_points: int) -> list[list[int]]:

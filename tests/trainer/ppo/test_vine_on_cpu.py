@@ -18,6 +18,7 @@ from verl.trainer.ppo.vine_algos import (
     estimate_vine_value,
     mc_entropic_value,
     require_terminal_rewards,
+    select_mc_points,
     validate_mc_points,
 )
 from verl.trainer.ppo.vine_trainer import RayVinePPOTrainer, validate_vine_config
@@ -47,6 +48,67 @@ def test_point_contract_and_validation():
         validate_mc_points([[1], [1, 2]], mask, 2)
     with pytest.raises(ValueError, match="terminal-only"):
         require_terminal_rewards(torch.tensor([[0.25, 1.0]]), torch.ones(1, 2))
+
+
+def test_select_mc_points_uses_blank_lines_and_respects_budget():
+    class FakeTokenizer:
+        pieces = {
+            0: "<pad>",
+            1: "First step",
+            2: "\n",
+            3: "Second step",
+            4: "\n\n",
+            5: "Third step",
+            6: "\n",
+            7: "\\boxed{3}",
+            8: "<eos>",
+        }
+
+        def decode(self, token_ids, *, skip_special_tokens, clean_up_tokenization_spaces):
+            token_id = token_ids[0]
+            return "" if skip_special_tokens and token_id in (0, 8) else self.pieces[token_id]
+
+    tokenizer = FakeTokenizer()
+    responses = torch.tensor(
+        [
+            [1, 4, 3, 4, 5, 4, 7, 8],
+            [1, 2, 2, 3, 7, 8, 0, 0],
+            [1, 2, 3, 7, 8, 0, 0, 0],
+            [1, 4, 8, 0, 0, 0, 0, 0],
+            [1, 2, 3, 4, 5, 6, 7, 8],
+        ]
+    )
+    masks = torch.tensor([[1] * 8, [1] * 6 + [0] * 2, [1] * 5 + [0] * 3, [1] * 3 + [0] * 5, [1] * 8])
+    config = OmegaConf.create({"vine_max_points": 4})
+    assert select_mc_points(responses, masks, tokenizer, config) == [[2, 4, 6], [3], [], [], [4]]
+    config.vine_max_points = 2
+    assert select_mc_points(responses, masks, tokenizer, config) == [[4], [3], [], [], [4]]
+
+
+def test_vine_step_metrics_count_unbudgeted_steps_and_format_proxies():
+    class FakeTokenizer:
+        pieces = {0: "", 1: "A", 2: "\n", 3: "B", 4: "\n\n", 5: "C"}
+
+        def decode(self, token_ids, **_):
+            return "".join(self.pieces[token_id] for token_id in token_ids)
+
+    trainer = object.__new__(RayVinePPOTrainer)
+    trainer.tokenizer = FakeTokenizer()
+    trainer.config = OmegaConf.create({"algorithm": {"vine_max_points": 2}})
+    generated = DataProto.from_single_dict(
+        {
+            "responses": torch.tensor([[1, 2, 3, 4, 5, 0], [1, 3, 5, 0, 0, 0], [1, 4, 3, 4, 5, 0]]),
+            "response_mask": torch.tensor([[1, 1, 1, 1, 1, 0], [1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 0]]),
+        }
+    )
+    metrics = trainer._auxiliary_rollout_metrics(generated, (None, [[0, 4], [0], [0, 2]], None, None))
+    assert metrics["vine/steps/mean"] == 2
+    assert metrics["vine/steps/p50"] == 2
+    assert metrics["vine/points/selected_mean"] == pytest.approx(5 / 3)
+    assert metrics["vine/points/over_budget_rate"] == pytest.approx(1 / 3)
+    assert metrics["vine/format/no_separator_rate"] == pytest.approx(1 / 3)
+    assert metrics["vine/format/single_newline_rate"] == pytest.approx(1 / 3)
+    assert metrics["vine/format/deviation_proxy_rate"] == pytest.approx(2 / 3)
 
 
 def test_vine_config_requires_critic_free_unshaped_rewards():
@@ -157,9 +219,7 @@ def test_continuation_agent_samples_from_exact_prefix():
 
     agent.apply_chat_template = apply_template
     agent.process_vision_info = process_vision
-    result = asyncio.run(
-        agent.run({}, raw_prompt=[{"role": "user", "content": "question"}], vine_prefix_ids=[21, 22])
-    )
+    result = asyncio.run(agent.run({}, raw_prompt=[{"role": "user", "content": "question"}], vine_prefix_ids=[21, 22]))
     assert result.prompt_ids == [10, 11]
     assert result.response_ids == [21, 22, 30, 31]
     assert result.response_mask == [1, 1, 1, 1]

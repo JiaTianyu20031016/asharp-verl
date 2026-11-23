@@ -1,6 +1,7 @@
 """Vine training: auxiliary continuations before the PPO actor update."""
 
 import math
+import re
 
 import numpy as np
 import torch
@@ -83,6 +84,36 @@ class RayVinePPOTrainer(RayPPOTrainer):
         auxiliary = self.async_rollout_manager.generate_sequences(auxiliary_prompts)
         auxiliary.meta_info.pop("timing", None)
         return auxiliary, points, origin_ids, point_ids
+
+    def _auxiliary_rollout_metrics(self, gen_batch_output, auxiliary_rollouts) -> dict[str, float]:
+        """Track raw response formatting separately from budgeted MC points."""
+        _, selected_points, _, _ = auxiliary_rollouts
+        responses = gen_batch_output.batch["responses"]
+        masks = gen_batch_output.batch["response_mask"]
+        step_counts = []
+        no_separator = []
+        single_newline = []
+        over_budget = []
+        for ids, mask in zip(responses, masks, strict=True):
+            text = self.tokenizer.decode(
+                ids[: int(mask.sum().item())].tolist(), skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )
+            steps = [part for part in re.split(r"\n{2,}", text) if part.strip()]
+            step_counts.append(len(steps))
+            no_separator.append(len(steps) < 2)
+            single_newline.append(bool(re.search(r"(?<!\n)\n(?!\n)", text)))
+            over_budget.append(max(len(steps) - 1, 0) > self.config.algorithm.vine_max_points - 1)
+
+        return {
+            "vine/steps/mean": float(np.mean(step_counts)),
+            "vine/steps/p50": float(np.median(step_counts)),
+            "vine/steps/p90": float(np.percentile(step_counts, 90)),
+            "vine/points/selected_mean": float(np.mean([len(points) for points in selected_points])),
+            "vine/points/over_budget_rate": float(np.mean(over_budget)),
+            "vine/format/no_separator_rate": float(np.mean(no_separator)),
+            "vine/format/single_newline_rate": float(np.mean(single_newline)),
+            "vine/format/deviation_proxy_rate": float(np.mean(np.logical_or(no_separator, single_newline))),
+        }
 
     def _compute_auxiliary_advantages(self, batch, auxiliary_rollouts):
         if auxiliary_rollouts is None:

@@ -1290,6 +1290,10 @@ class RayPPOTrainer:
         """Extension point for algorithms that sample from generated prefixes."""
         return None
 
+    def _auxiliary_rollout_metrics(self, gen_batch_output: DataProto, auxiliary_rollouts) -> dict[str, float]:
+        """Extension point for metrics computed from the original rollouts."""
+        return {}
+
     def _compute_auxiliary_advantages(self, batch: DataProto, auxiliary_rollouts):
         """Return precomputed actor advantages, or None for standard estimators."""
         return None
@@ -1391,6 +1395,7 @@ class RayPPOTrainer:
                             self.async_rollout_manager.start_profile()
                         gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
                         auxiliary_rollouts = self._generate_auxiliary_rollouts(gen_batch, gen_batch_output)
+                        metrics.update(self._auxiliary_rollout_metrics(gen_batch_output, auxiliary_rollouts))
                         self.checkpoint_manager.sleep_replicas()
                         if curr_step_profile:
                             self.async_rollout_manager.stop_profile()
